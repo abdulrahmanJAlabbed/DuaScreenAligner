@@ -186,7 +186,13 @@ func (s *DBusService) SetLayout(layoutJSON string) (bool, *dbus.Error) {
 	s.transform.SetLayout(cfg)
 	s.currentLayout = cfg
 
-	log.Printf("SetLayout: applied %d monitors", len(cfg.Monitors))
+	// Signal the event loop to re-scan and re-grab the device (in case the path changed).
+	select {
+	case s.reloadCh <- cfg.DevicePath:
+		log.Printf("SetLayout: applied %d monitors, reload requested for %q", len(cfg.Monitors), cfg.DevicePath)
+	default:
+		log.Printf("SetLayout: applied %d monitors, reload deferred (busy)", len(cfg.Monitors))
+	}
 
 	// Emit LayoutApplied signal.
 	s.conn.Emit(dbus.ObjectPath(dbusPath), dbusIface+".LayoutApplied", int32(len(cfg.Monitors)))

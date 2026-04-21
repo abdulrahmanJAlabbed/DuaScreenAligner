@@ -109,14 +109,16 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
         });
         page.add(mapGroup);
 
-        // Parse the current layout from GSettings.
+        // Parse the current layout from GSettings, or auto-detect from system.
         let monitors = this._parseMonitors(settings);
         if (monitors.length === 0) {
-            // Default: two example monitors side by side.
-            monitors = [
-                { name: 'Display 1', x: 0, y: 0, width_px: 1920, height_px: 1080, width_mm: 527, height_mm: 296, dpi_override: 0 },
-                { name: 'Display 2', x: 1920, y: 0, width_px: 2560, height_px: 1440, width_mm: 597, height_mm: 336, dpi_override: 0 },
-            ];
+            monitors = this._detectSystemMonitors();
+        }
+        // Always auto-detect if count doesn't match what the system reports.
+        const systemCount = this._getSystemMonitorCount();
+        if (systemCount > 0 && monitors.length !== systemCount) {
+            log(`[DuaScreen] Monitor count mismatch (saved: ${monitors.length}, system: ${systemCount}). Re-detecting.`);
+            monitors = this._detectSystemMonitors();
         }
 
         // State for drag interaction.
@@ -285,6 +287,8 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
                 const m = monitors[selectedIndex];
                 dragOffsetX = mx - m.x;
                 dragOffsetY = my - m.y;
+                dragStartX = startX;
+                dragStartY = startY;
             }
 
             drawingArea.queue_draw();
@@ -293,8 +297,8 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
         dragGesture.connect('drag-update', (_gesture, offsetX, offsetY) => {
             if (!isDragging || selectedIndex < 0) return;
 
-            const [startX, startY] = dragGesture.get_start_point();
-            const [mx, my] = fromCanvas(startX[1] + offsetX, startY[1] + offsetY);
+            // Convert the current drag position (start + offset) to logical coords.
+            const [mx, my] = fromCanvas(dragStartX + offsetX, dragStartY + offsetY);
 
             // Snap to grid (32px logical) for clean alignment.
             const grid = 32;
@@ -381,6 +385,7 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
             margin_top: 12,
         });
         applyButton.connect('clicked', () => {
+            this._saveMonitors(settings, monitors);
             this._pushLayoutToDaemon(monitors, settings);
         });
 
@@ -587,6 +592,106 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
             log(`[DuaScreen] Failed to parse monitor layout: ${e.message}`);
             return [];
         }
+    }
+
+    /**
+     * _getSystemMonitorCount — Returns the number of monitors detected by Gdk.
+     */
+    _getSystemMonitorCount() {
+        try {
+            const display = Gdk.Display.get_default();
+            if (!display) return 0;
+            const monitors = display.get_monitors();
+            return monitors ? monitors.get_n_items() : 0;
+        } catch (e) {
+            return 0;
+        }
+    }
+
+    /**
+     * _detectSystemMonitors — Auto-detect monitors from the system.
+     * Uses Gdk.Display for positions/sizes and xrandr for physical dimensions.
+     */
+    _detectSystemMonitors() {
+        const result = [];
+        try {
+            const display = Gdk.Display.get_default();
+            if (!display) return result;
+
+            const monitorList = display.get_monitors();
+            if (!monitorList) return result;
+
+            // First, try to get physical dimensions from xrandr (more reliable).
+            const physDims = this._getPhysicalDimensionsFromXrandr();
+
+            const n = monitorList.get_n_items();
+            for (let i = 0; i < n; i++) {
+                const mon = monitorList.get_item(i);
+                const geom = mon.get_geometry();
+                const connector = mon.get_connector() || `Display ${i + 1}`;
+
+                // Get physical dimensions from xrandr data or Gdk.
+                let width_mm = 0, height_mm = 0;
+                if (physDims[connector]) {
+                    width_mm = physDims[connector].width_mm;
+                    height_mm = physDims[connector].height_mm;
+                } else {
+                    width_mm = mon.get_width_mm();
+                    height_mm = mon.get_height_mm();
+                }
+
+                result.push({
+                    name: connector,
+                    x: geom.x,
+                    y: geom.y,
+                    width_px: geom.width,
+                    height_px: geom.height,
+                    width_mm: width_mm || 0,
+                    height_mm: height_mm || 0,
+                    dpi_override: 0,
+                });
+            }
+
+            log(`[DuaScreen] Auto-detected ${result.length} monitors from system`);
+            result.forEach((m, i) => {
+                const dpi = m.width_mm > 0 ? (m.width_px / (m.width_mm / 25.4)).toFixed(1) : '?';
+                log(`[DuaScreen]   [${i}] ${m.name}: ${m.width_px}x${m.height_px}+${m.x}+${m.y} (${m.width_mm}mm x ${m.height_mm}mm, DPI=${dpi})`);
+            });
+        } catch (e) {
+            log(`[DuaScreen] Monitor auto-detect failed: ${e.message}`);
+        }
+        return result;
+    }
+
+    /**
+     * _getPhysicalDimensionsFromXrandr — Parse xrandr output for physical dims.
+     * Returns a map of { connector: { width_mm, height_mm } }.
+     * Handles rotation by swapping dims for left/right rotated monitors.
+     */
+    _getPhysicalDimensionsFromXrandr() {
+        const dims = {};
+        try {
+            const [ok, stdout] = GLib.spawn_command_line_sync('xrandr --query');
+            if (!ok || !stdout) return dims;
+
+            const output = new TextDecoder().decode(stdout);
+            const re = /^(\S+)\s+connected\s+(?:primary\s+)?\d+x\d+\+\d+\+\d+\s+(\w+)?\s*\(.*?\)\s+(\d+)mm\s+x\s+(\d+)mm/gm;
+            let match;
+            while ((match = re.exec(output)) !== null) {
+                const name = match[1];
+                const rotation = match[2] || 'normal';
+                let w = parseInt(match[3], 10);
+                let h = parseInt(match[4], 10);
+                // Swap dims for rotated monitors.
+                if (rotation === 'left' || rotation === 'right') {
+                    [w, h] = [h, w];
+                }
+                dims[name] = { width_mm: w, height_mm: h };
+            }
+        } catch (e) {
+            log(`[DuaScreen] xrandr parse failed: ${e.message}`);
+        }
+        return dims;
     }
 
     /**

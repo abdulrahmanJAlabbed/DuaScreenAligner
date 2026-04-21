@@ -34,9 +34,12 @@ BUILD_DIR       := build
 PREFIX          := /usr/local
 BINDIR          := $(PREFIX)/bin
 SYSTEMD_UNITDIR := /etc/systemd/system
-DBUS_CONFDIR    := /usr/share/dbus-1/system.d
+DBUS_CONFDIR    := /etc/dbus-1/system.d
 UDEV_RULESDIR   := /etc/udev/rules.d
-EXTENSION_INSTALLDIR := $(HOME)/.local/share/gnome-shell/extensions/$(EXTENSION_UUID)
+# Ensure the extension is installed to the real user's home when running with sudo.
+REAL_USER       := $(or $(SUDO_USER),$(USER))
+REAL_HOME       := $(shell getent passwd $(REAL_USER) | cut -d: -f6)
+EXTENSION_INSTALLDIR := $(REAL_HOME)/.local/share/gnome-shell/extensions/$(EXTENSION_UUID)
 
 # Go build flags
 GO              := go
@@ -134,6 +137,8 @@ install-udev: ## Install udev rules
 install-dbus: ## Install DBus system bus policy
 	@echo "==> Installing DBus policy..."
 	sudo install -Dm644 $(DBUS_DIR)/com.github.duascreenaligner.Daemon.conf $(DBUS_CONFDIR)/com.github.duascreenaligner.Daemon.conf
+	# Clean up the old location if it exists
+	-sudo rm -f /usr/share/dbus-1/system.d/com.github.duascreenaligner.Daemon.conf
 	@echo "    Policy: $(DBUS_CONFDIR)/com.github.duascreenaligner.Daemon.conf"
 
 # ============================================================================

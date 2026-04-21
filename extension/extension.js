@@ -16,6 +16,7 @@ import GLib from 'gi://GLib';
 import Gio from 'gi://Gio';
 import St from 'gi://St';
 import Clutter from 'gi://Clutter';
+import Meta from 'gi://Meta';
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
@@ -114,6 +115,11 @@ class DuaScreenIndicator extends PanelMenu.Button {
 
         // ---- Connect to daemon via async DBus proxy ----
         this._initProxy();
+
+        // ---- Monitor change listener ----
+        this._monitorsChangedId = Main.layoutManager.connect('monitors-changed', () => {
+            this._pushCurrentLayout();
+        });
     }
 
     /**
@@ -225,6 +231,9 @@ class DuaScreenIndicator extends PanelMenu.Button {
         // Initial status query.
         this._queryStatusAsync();
 
+        // Push initial layout to daemon.
+        this._pushCurrentLayout();
+
         // Start a slow poll as a safety net (signal delivery isn't guaranteed).
         this._startPolling();
     }
@@ -271,6 +280,67 @@ class DuaScreenIndicator extends PanelMenu.Button {
         this._proxy.ReloadDeviceRemote((_result, error) => {
             if (error) {
                 log(`[DuaScreen] ReloadDevice failed: ${error.message}`);
+            }
+        });
+    }
+
+    /**
+     * _pushCurrentLayout — Sync current monitor layout to the daemon.
+     * Tries to use saved preferences first, falls back to system geometry.
+     */
+    _pushCurrentLayout() {
+        if (!this._proxy) return;
+
+        const settings = this._ext.getSettings();
+        const savedLayoutJson = settings.get_string('monitor-layout');
+        let monitors = [];
+
+        try {
+            if (savedLayoutJson) {
+                monitors = JSON.parse(savedLayoutJson);
+            }
+        } catch (e) {
+            log(`[DuaScreen] Failed to parse saved layout: ${e.message}`);
+        }
+
+        // If no saved layout or monitor count mismatch, use system geometry.
+        const currentCount = Main.layoutManager.monitors.length;
+        if (monitors.length !== currentCount) {
+            log(`[DuaScreen] Layout mismatch (saved: ${monitors.length}, actual: ${currentCount}). Using system geometry.`);
+            monitors = Main.layoutManager.monitors.map(m => {
+                // Get physical dimensions from MonitorManager if possible.
+                let width_mm = 0, height_mm = 0;
+                try {
+                    const monitorManager = Meta.MonitorManager.get();
+                    const metaMonitors = monitorManager.get_monitors();
+                    if (m.index < metaMonitors.length) {
+                        [width_mm, height_mm] = metaMonitors[m.index].get_dimensions();
+                    }
+                } catch (e) {}
+
+                return {
+                    name: `Monitor ${m.index}`,
+                    x: m.x,
+                    y: m.y,
+                    width_px: m.width,
+                    height_px: m.height,
+                    width_mm: width_mm || 0,
+                    height_mm: height_mm || 0,
+                    dpi_override: 0
+                };
+            });
+        }
+
+        const layout = {
+            monitors: monitors,
+            device_path: settings.get_string('input-device'),
+        };
+
+        this._proxy.SetLayoutRemote(JSON.stringify(layout), (success, error) => {
+            if (error) {
+                log(`[DuaScreen] Auto-SetLayout failed: ${error.message}`);
+            } else {
+                log(`[DuaScreen] Layout synced automatically (${monitors.length} monitors)`);
             }
         });
     }
@@ -340,6 +410,12 @@ class DuaScreenIndicator extends PanelMenu.Button {
         if (this._pollTimerId) {
             GLib.source_remove(this._pollTimerId);
             this._pollTimerId = 0;
+        }
+
+        // Disconnect monitor listener.
+        if (this._monitorsChangedId) {
+            Main.layoutManager.disconnect(this._monitorsChangedId);
+            this._monitorsChangedId = 0;
         }
 
         // Disconnect DBus signal subscription.

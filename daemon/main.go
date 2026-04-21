@@ -39,6 +39,9 @@ var (
 
 	// flagVersion prints the version and exits.
 	flagVersion = flag.Bool("version", false, "Print version and exit")
+
+	// flagListDevices lists detected mouse devices and exits.
+	flagListDevices = flag.Bool("list-devices", false, "List detected mouse devices and exit")
 )
 
 // ============================================================================
@@ -50,6 +53,18 @@ func main() {
 
 	if *flagVersion {
 		fmt.Printf("dua-screen-aligner %s\n", Version)
+		os.Exit(0)
+	}
+
+	if *flagListDevices {
+		devices, err := DiscoverMouseDevices()
+		if err != nil {
+			log.Fatalf("Failed to discover devices: %v", err)
+		}
+		fmt.Printf("Detected mouse devices:\n")
+		for _, dev := range devices {
+			fmt.Printf("  - %s (%s) via %s\n", dev.Name, dev.Path, dev.ByIDPath)
+		}
 		os.Exit(0)
 	}
 
@@ -84,6 +99,17 @@ func main() {
 		log.Fatalf("Failed to start DBus service: %v", err)
 	}
 	defer dbusSvc.Close()
+
+	// ---- Auto-detect monitor layout from xrandr ----
+	// Provides an initial layout so DPI correction works immediately,
+	// without waiting for the GNOME extension to push a layout via DBus.
+	if initialLayout := DetectLayoutFromXrandr(); initialLayout != nil {
+		transform.SetLayout(initialLayout)
+		transform.SetEnabled(true)
+		state.Store(StateRunning)
+		dbusSvc.EmitStatusChanged()
+		log.Printf("Auto-configured layout: %s", FormatLayoutSummary(initialLayout))
+	}
 
 	// ---- Signal handling for graceful shutdown ----
 	sigCh := make(chan os.Signal, 1)

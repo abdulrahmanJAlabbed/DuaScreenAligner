@@ -258,14 +258,28 @@ func DiscoverMouseDevices() ([]DeviceInfo, error) {
 	return devices, nil
 }
 
+// isKeyboardComposite checks if a device's by-id path suggests it's a
+// secondary mouse interface on a keyboard (e.g., macro buttons).
+// These devices typically contain "-if01-" or "Keyboard" in the path.
+func isKeyboardComposite(byIDPath string) bool {
+	lower := strings.ToLower(byIDPath)
+	return strings.Contains(lower, "-if01-") ||
+		strings.Contains(lower, "-if02-") ||
+		strings.Contains(lower, "keyboard") ||
+		strings.Contains(lower, "kbd")
+}
+
 // FindDeviceByPath locates and opens a specific evdev device, or if path is
-// empty, auto-detects the first available mouse device.
+// empty, auto-detects the best available mouse device.
+//
+// Auto-detection prefers standalone mouse devices over keyboard composite
+// devices (e.g., a HyperX keyboard with a secondary mouse endpoint).
 func FindDeviceByPath(path string) (*EvdevReader, error) {
 	if path != "" {
 		return OpenEvdev(path)
 	}
 
-	// Auto-detect: use the first mouse device found.
+	// Auto-detect: prefer standalone mice over keyboard composites.
 	devices, err := DiscoverMouseDevices()
 	if err != nil {
 		return nil, err
@@ -274,5 +288,13 @@ func FindDeviceByPath(path string) (*EvdevReader, error) {
 		return nil, fmt.Errorf("no mouse devices found in /dev/input/by-id/")
 	}
 
+	// Try standalone mice first.
+	for _, dev := range devices {
+		if !isKeyboardComposite(dev.ByIDPath) {
+			return OpenEvdev(dev.Path)
+		}
+	}
+
+	// Fall back to any mouse device.
 	return OpenEvdev(devices[0].Path)
 }

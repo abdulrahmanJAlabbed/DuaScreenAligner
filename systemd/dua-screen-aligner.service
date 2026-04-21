@@ -28,8 +28,6 @@ ExecStart=/usr/local/bin/dua-screen-aligner --log-level=info
 # Restart on failure with back-off.
 Restart=on-failure
 RestartSec=3
-StartLimitIntervalSec=60
-StartLimitBurst=5
 
 # ---- Security Hardening ----
 
@@ -39,21 +37,17 @@ StartLimitBurst=5
 
 # Filesystem protection: read-only except where explicitly allowed.
 ProtectSystem=strict
-ProtectHome=yes
 ReadWritePaths=/dev/input /dev/uinput
+
+# Allow reading /proc to discover DISPLAY env for xrandr auto-detect.
+# ProtectHome is intentionally NOT set — xrandr needs X auth cookies.
+ProtectProc=default
 
 # No network access required.
 PrivateNetwork=yes
 
-# Prevent privilege escalation.
+# Prevent privilege escalation via setuid binaries.
 NoNewPrivileges=yes
-
-# Restrict kernel capabilities to what's needed.
-CapabilityBoundingSet=CAP_SYS_RAWIO
-AmbientCapabilities=CAP_SYS_RAWIO
-
-# Restrict system calls to a reasonable set.
-SystemCallFilter=@system-service @io-event
 
 # No namespace creation.
 RestrictNamespaces=yes
@@ -65,9 +59,6 @@ ProtectKernelLogs=yes
 
 # Protect control groups.
 ProtectControlGroups=yes
-
-# Memory deny write-execute (no JIT needed).
-MemoryDenyWriteExecute=yes
 
 # Restrict realtime scheduling (not needed).
 RestrictRealtime=yes
