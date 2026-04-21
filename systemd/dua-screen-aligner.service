@@ -1,0 +1,76 @@
+# DuaScreenAligner — systemd service unit
+#
+# Type=dbus: systemd activates the daemon when the DBus name is requested.
+# The daemon registers com.github.duascreenaligner.Daemon on the system bus.
+#
+# Security hardening:
+#   - Runs as root (required for evdev EVIOCGRAB and uinput access)
+#   - ProtectSystem=strict: read-only filesystem except /dev
+#   - PrivateNetwork=yes: no network access needed
+#   - NoNewPrivileges=yes: prevent privilege escalation
+#   - ProtectHome=yes: no access to user home directories
+#   - RestrictNamespaces=yes: no new namespaces
+
+[Unit]
+Description=DuaScreen Aligner — Multi-Monitor DPI Cursor Correction Daemon
+Documentation=https://github.com/duascreenaligner/dua-screen-aligner
+After=dbus.service
+Requires=dbus.service
+
+[Service]
+# DBus activation: daemon starts when its bus name is requested.
+Type=dbus
+BusName=com.github.duascreenaligner.Daemon
+
+# Executable path (installed by Makefile).
+ExecStart=/usr/local/bin/dua-screen-aligner --log-level=info
+
+# Restart on failure with back-off.
+Restart=on-failure
+RestartSec=3
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# ---- Security Hardening ----
+
+# Run as root for evdev/uinput access.
+# A dedicated user could be used with appropriate udev rules.
+# User=root
+
+# Filesystem protection: read-only except where explicitly allowed.
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/dev/input /dev/uinput
+
+# No network access required.
+PrivateNetwork=yes
+
+# Prevent privilege escalation.
+NoNewPrivileges=yes
+
+# Restrict kernel capabilities to what's needed.
+CapabilityBoundingSet=CAP_SYS_RAWIO
+AmbientCapabilities=CAP_SYS_RAWIO
+
+# Restrict system calls to a reasonable set.
+SystemCallFilter=@system-service @io-event
+
+# No namespace creation.
+RestrictNamespaces=yes
+
+# Protect kernel tunables.
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+
+# Protect control groups.
+ProtectControlGroups=yes
+
+# Memory deny write-execute (no JIT needed).
+MemoryDenyWriteExecute=yes
+
+# Restrict realtime scheduling (not needed).
+RestrictRealtime=yes
+
+[Install]
+WantedBy=multi-user.target

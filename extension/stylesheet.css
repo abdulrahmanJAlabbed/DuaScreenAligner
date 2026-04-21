@@ -1,0 +1,49 @@
+/* stylesheet.css — Panel indicator styling for DuaScreen Aligner.
+ *
+ * Follows Adwaita design tokens. Provides state-based coloring for
+ * the panel icon and subtle animations for the active state.
+ */
+
+/* ============================================================================
+ * Panel Icon Base
+ * ============================================================================ */
+
+/* Base style for the panel icon — inherits Adwaita system-status-icon sizing. */
+.dua-panel-icon {
+    icon-size: 16px;
+    margin: 0 4px;
+    transition-duration: 300ms;
+    transition-property: color, opacity;
+}
+
+/* ============================================================================
+ * State Indicators
+ * ============================================================================ */
+
+/* Running state: accent color with a subtle pulse animation. */
+.dua-state-running {
+    color: #3584e4; /* Adwaita blue accent */
+}
+
+/* Paused state: dimmed to indicate inactive correction. */
+.dua-state-paused {
+    color: #9a9996; /* Adwaita dim gray */
+    opacity: 0.7;
+}
+
+/* Error / unavailable state: warning color. */
+.dua-state-error {
+    color: #e5a50a; /* Adwaita warning yellow */
+    opacity: 0.85;
+}
+
+/* ============================================================================
+ * Menu Items
+ * ============================================================================ */
+
+/* Status label in the popup menu — slightly smaller, muted text. */
+.dua-status-label .popup-menu-item {
+    font-size: 0.9em;
+    color: #9a9996;
+    font-style: italic;
+}

@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  GSettings Schema for DuaScreen Aligner GNOME Extension.
+
+  Defines all persisted configuration keys:
+  - monitor-layout: JSON-encoded monitor topology and DPI config
+  - enabled: whether cursor correction is active
+  - auto-start: whether to launch daemon on login
+  - input-device: selected evdev device path
+  - log-level: daemon log verbosity
+-->
+<schemalist>
+  <schema id="org.gnome.shell.extensions.dua-screen-aligner"
+          path="/org/gnome/shell/extensions/dua-screen-aligner/">
+
+    <!-- Monitor Layout: JSON string containing the full monitor topology.
+         Schema: {"monitors": [...], "device_path": "..."} -->
+    <key name="monitor-layout" type="s">
+      <default>''</default>
+      <summary>Monitor layout configuration</summary>
+      <description>
+        JSON-encoded monitor arrangement including position, resolution,
+        physical dimensions, and DPI overrides for each display.
+      </description>
+    </key>
+
+    <!-- Enabled: Master switch for cursor DPI correction. -->
+    <key name="enabled" type="b">
+      <default>true</default>
+      <summary>Enable cursor correction</summary>
+      <description>
+        When enabled, the daemon applies DPI-aware scaling to cursor
+        movement at monitor boundaries. When disabled, raw movement
+        passes through unmodified.
+      </description>
+    </key>
+
+    <!-- Auto-Start: Launch the daemon automatically on user login. -->
+    <key name="auto-start" type="b">
+      <default>true</default>
+      <summary>Start daemon automatically</summary>
+      <description>
+        When enabled, the DuaScreenAligner daemon is started via systemd
+        on user login.
+      </description>
+    </key>
+
+    <!-- Input Device: Path to the evdev device to intercept.
+         Empty string triggers auto-detection. -->
+    <key name="input-device" type="s">
+      <default>''</default>
+      <summary>Input device path</summary>
+      <description>
+        The evdev device path for the physical mouse to intercept
+        (e.g., /dev/input/event5). Leave empty for automatic detection.
+      </description>
+    </key>
+
+    <!-- Log Level: Daemon diagnostic verbosity. -->
+    <key name="log-level" type="s">
+      <default>'info'</default>
+      <summary>Daemon log level</summary>
+      <description>
+        Controls the verbosity of daemon log output.
+        Valid values: error, warn, info, debug.
+      </description>
+    </key>
+
+  </schema>
+</schemalist>
