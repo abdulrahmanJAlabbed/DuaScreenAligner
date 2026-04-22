@@ -1,5 +1,5 @@
 // extension.js — GNOME Shell Extension entry point (GNOME 45+ ES Module).
-// Simplified to display measurements on screen borders.
+// Fully simplified to display measurements on screen borders only.
 
 import GObject from 'gi://GObject';
 import St from 'gi://St';
@@ -24,7 +24,7 @@ class MeasurementOverlay extends St.Widget {
     _createMeasurements() {
         const monitors = Main.layoutManager.monitors;
 
-        monitors.forEach((monitor, index) => {
+        monitors.forEach((monitor) => {
             // Create a container for each monitor's measurements.
             const container = new St.Widget({
                 layout_manager: new Clutter.BoxLayout(),
@@ -62,8 +62,14 @@ class MeasurementOverlay extends St.Widget {
 export default class DuaScreenAlignerExtension {
     enable() {
         log('[DuaScreen] Extension enabled');
-        this._overlay = new MeasurementOverlay();
-        Main.layoutManager.addChrome(this._overlay);
+
+        try {
+            this._overlay = new MeasurementOverlay();
+            Main.layoutManager.addChrome(this._overlay);
+            log('[DuaScreen] MeasurementOverlay successfully added to the screen.');
+        } catch (error) {
+            log(`[DuaScreen] Error initializing MeasurementOverlay: ${error.message}`);
+        }
     }
 
     disable() {
@@ -71,6 +77,7 @@ export default class DuaScreenAlignerExtension {
         if (this._overlay) {
             this._overlay.destroy();
             this._overlay = null;
+            log('[DuaScreen] MeasurementOverlay successfully removed.');
         }
     }
 }
