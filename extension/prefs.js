@@ -384,26 +384,30 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
         window.set_search_enabled(false);
 
         window.add(this._buildOverviewPage());
-        window.add(this._buildLayoutPage());
     }
 
     _buildOverviewPage() {
         const page = new Adw.PreferencesPage({
-            title: _('Overview'),
+            title: _('Home'),
             icon_name: 'preferences-system-symbolic',
         });
 
-        const statusGroup = new Adw.PreferencesGroup({
-            title: _('Current state'),
+        const startGroup = new Adw.PreferencesGroup({
+            title: _('Screen editor'),
+            description: _('Open the full-screen editor overlay. Use that screen to align monitors and apply changes.'),
         });
 
-        const statusBox = new Gtk.Box({
+        const startBox = new Gtk.Box({
             orientation: Gtk.Orientation.VERTICAL,
-            spacing: 10,
-            margin_top: 6,
-            margin_bottom: 6,
+            spacing: 12,
+            margin_top: 8,
+            margin_bottom: 8,
             hexpand: true,
         });
+
+        const startButton = this._makeToolButton(_('Start screen editor'), 'video-display-symbolic', () => this._requestScreenEditor());
+        startButton.add_css_class('suggested-action');
+        startBox.append(startButton);
 
         this._overviewStatusLabel = new Gtk.Label({
             label: _('Status has not been checked yet.'),
@@ -411,8 +415,7 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
             xalign: 0,
             hexpand: true,
         });
-        this._overviewStatusLabel.add_css_class('title-4');
-        statusBox.append(this._overviewStatusLabel);
+        startBox.append(this._overviewStatusLabel);
 
         this._layoutStatsLabel = new Gtk.Label({
             label: _('No monitor layout loaded.'),
@@ -420,33 +423,73 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
             xalign: 0,
             hexpand: true,
         });
-        statusBox.append(this._layoutStatsLabel);
+        startBox.append(this._layoutStatsLabel);
 
-        const statusButtons = new Gtk.FlowBox({
+        const quickButtons = new Gtk.FlowBox({
             selection_mode: Gtk.SelectionMode.NONE,
             row_spacing: 8,
             column_spacing: 8,
             max_children_per_line: 3,
             hexpand: true,
         });
-        statusButtons.insert(this._makeToolButton(_('Open screen editor'), 'video-display-symbolic', () => this._requestScreenEditor()), -1);
-        statusButtons.insert(this._makeToolButton(_('Refresh status'), 'view-refresh-symbolic', () => this._refreshDaemonStatus()), -1);
-        statusButtons.insert(this._makeToolButton(_('Apply now'), 'emblem-ok-symbolic', () => this._saveAndApplyLayout()), -1);
-        statusButtons.insert(this._makeToolButton(_('Find mice'), 'input-mouse-symbolic', () => this._listDevices()), -1);
-        statusBox.append(statusButtons);
-        statusGroup.add(statusBox);
-        page.add(statusGroup);
+        quickButtons.insert(this._makeToolButton(_('Detect current monitors'), 'find-location-symbolic', () => this._detectAndSaveCurrentLayout()), -1);
+        quickButtons.insert(this._makeToolButton(_('Refresh status'), 'view-refresh-symbolic', () => this._refreshDaemonStatus()), -1);
+        quickButtons.insert(this._makeToolButton(_('Apply saved layout'), 'emblem-ok-symbolic', () => this._applySavedLayout()), -1);
+        startBox.append(quickButtons);
 
-        const settingsGroup = new Adw.PreferencesGroup({
-            title: _('Controls'),
+        startGroup.add(startBox);
+        page.add(startGroup);
+
+        const imageGroup = new Adw.PreferencesGroup({
+            title: _('Wallpaper image'),
+            description: _('Choose the image and fit mode used when setting the desktop background.'),
         });
 
+        const imageBox = new Gtk.Box({
+            orientation: Gtk.Orientation.VERTICAL,
+            spacing: 10,
+            margin_top: 8,
+            margin_bottom: 8,
+            hexpand: true,
+        });
+        const imageRow = new Gtk.FlowBox({
+            selection_mode: Gtk.SelectionMode.NONE,
+            row_spacing: 8,
+            column_spacing: 8,
+            max_children_per_line: 3,
+            hexpand: true,
+        });
+        imageRow.insert(this._makeImageSourceControl(), -1);
+        imageRow.insert(this._makeToolButton(_('Choose local image'), 'document-open-symbolic', () => this._chooseLocalImage()), -1);
+        imageRow.insert(this._makeComboControl(_('Fit'), [
+            ['cover', _('Fill: crop edges')],
+            ['contain', _('Fit whole: no crop')],
+            ['stretch', _('Stretch: distort')],
+        ], this._imageFitMode, value => {
+            this._imageFitMode = value || 'cover';
+        }), -1);
+        imageBox.append(imageRow);
+
+        this._imagePathLabel = new Gtk.Label({
+            label: this._selectedImageSummary(),
+            wrap: true,
+            xalign: 0,
+            hexpand: true,
+        });
+        imageBox.append(this._imagePathLabel);
+        imageBox.append(this._makeToolButton(_('Set desktop wallpaper'), 'preferences-desktop-wallpaper-symbolic', () => this._setSelectedImageAsWallpaper()));
+        imageGroup.add(imageBox);
+        page.add(imageGroup);
+
+        const settingsGroup = new Adw.PreferencesGroup({
+            title: _('Mouse correction'),
+        });
         settingsGroup.add(this._makeSwitchRow(_('Enable correction'), _('DPI-aware cursor motion is sent to the daemon.'), 'enabled'));
         settingsGroup.add(this._makeSwitchRow(_('Start automatically'), _('Launch the daemon on login.'), 'auto-start'));
 
         const inputRow = new Adw.ActionRow({
             title: _('Mouse device'),
-            subtitle: _('Leave empty for auto-detect, or use Find mice to choose a /dev/input/event path.'),
+            subtitle: _('Leave empty for auto-detect.'),
         });
         this._inputDeviceEntry = new Gtk.Entry({
             hexpand: true,
@@ -459,8 +502,18 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
         });
         inputRow.add_suffix(this._inputDeviceEntry);
         settingsGroup.add(inputRow);
-
         page.add(settingsGroup);
+
+        this._statusLabel = new Gtk.Label({
+            label: '',
+            wrap: true,
+            xalign: 0,
+            hexpand: true,
+        });
+        const statusGroup = new Adw.PreferencesGroup({ title: _('Last action') });
+        statusGroup.add(this._statusLabel);
+        page.add(statusGroup);
+
         this._refreshLayoutStatsFromSettings();
         this._refreshDaemonStatus();
         return page;
@@ -967,10 +1020,17 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
     }
 
     _renderWallpaperPNG(outputPath) {
-        if (!this._visualLayout || !Array.isArray(this._visualLayout.monitors) || this._visualLayout.monitors.length === 0)
-            throw new Error('load or detect a monitor layout first');
+        let layout;
+        try {
+            layout = JSON.parse(_detectLayoutFromXrandr(this._settings.get_string('input-device').trim()));
+        } catch (error) {
+            const saved = this._settings.get_string('monitor-layout');
+            layout = saved && saved.trim().length > 0 ? JSON.parse(saved) : this._visualLayout;
+        }
+        if (!layout || !Array.isArray(layout.monitors) || layout.monitors.length === 0)
+            throw new Error('detect monitors first');
 
-        const monitors = this._visualLayout.monitors;
+        const monitors = layout.monitors;
         const bounds = this._layoutBounds(monitors);
         const outputWidth = Math.max(1, Math.round(bounds.width));
         const outputHeight = Math.max(1, Math.round(bounds.height));

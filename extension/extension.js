@@ -39,6 +39,55 @@ function _deepUnpackBoolean(result) {
     return Array.isArray(unpacked) ? Boolean(unpacked[0]) : Boolean(unpacked);
 }
 
+function _parseXrandrOutput(output) {
+    const monitors = [];
+    const lineRegex = /^(\S+)\s+connected\s+(primary\s+)?(\d+)x(\d+)\+(\-?\d+)\+(\-?\d+)\s*(\w+)?\s*\(.*?\)\s+(\d+)mm\s+x\s+(\d+)mm/i;
+
+    for (const line of output.split('\n')) {
+        const match = line.match(lineRegex);
+        if (!match)
+            continue;
+
+        let widthMM = Number.parseInt(match[8], 10);
+        let heightMM = Number.parseInt(match[9], 10);
+        const rotation = match[7] || 'normal';
+        if (rotation === 'left' || rotation === 'right') {
+            const tmp = widthMM;
+            widthMM = heightMM;
+            heightMM = tmp;
+        }
+
+        monitors.push({
+            name: match[1],
+            primary: Boolean(match[2]),
+            width_px: Number.parseInt(match[3], 10),
+            height_px: Number.parseInt(match[4], 10),
+            x: Number.parseInt(match[5], 10),
+            y: Number.parseInt(match[6], 10),
+            width_mm: widthMM,
+            height_mm: heightMM,
+        });
+    }
+
+    monitors.sort((a, b) => Number(Boolean(b.primary)) - Number(Boolean(a.primary)) || a.x - b.x || a.y - b.y);
+    return monitors;
+}
+
+function _detectLayoutFromXrandr(devicePath = '') {
+    const [ok, stdout, stderr, waitStatus] = GLib.spawn_command_line_sync('xrandr --query');
+    if (!ok || waitStatus !== 0) {
+        const errorMsg = stderr ? new TextDecoder().decode(stderr).trim() : 'xrandr command failed';
+        throw new Error(errorMsg || 'xrandr command failed');
+    }
+
+    const text = stdout ? new TextDecoder().decode(stdout) : '';
+    const monitors = _parseXrandrOutput(text);
+    if (monitors.length === 0)
+        throw new Error('No connected monitors detected from xrandr');
+
+    return { monitors, device_path: devicePath };
+}
+
 function _fallbackLayout() {
     return {
         monitors: [
@@ -384,7 +433,16 @@ export default class DuaScreenAlignerExtension extends Extension {
         left.set_position(18, 86);
         left.set_size(214, Math.max(260, height - 172));
         left.add_child(new St.Label({ text: 'Auto align', style_class: 'dua-panel-heading' }));
-        left.add_child(this._button('Detect in Preferences', () => this._setOverlayStatus('Use Preferences > Detect monitors when xrandr geometry needs refreshing.')));
+        left.add_child(this._button('Detect current', () => {
+            try {
+                this._overlayLayout = _detectLayoutFromXrandr(this._settings.get_string('input-device').trim());
+                this._selectedMonitorIndex = 0;
+                this._refreshOverlayMap();
+                this._setOverlayStatus('Detected current GNOME monitor geometry.');
+            } catch (error) {
+                this._setOverlayStatus(`Detect failed: ${error.message}`);
+            }
+        }));
         left.add_child(this._button('Side by side', () => {
             _alignSideBySide(this._overlayLayout);
             this._refreshOverlayMap();
