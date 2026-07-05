@@ -133,7 +133,7 @@ function _stackPreset() {
 
 function _parseXrandrOutput(output) {
     const monitors = [];
-    const lineRegex = /^(\S+)\s+connected\s+(?:primary\s+)?(\d+)x(\d+)\+(\-?\d+)\+(\-?\d+)\s*(\w+)?\s*\(.*?\)\s+(\d+)mm\s+x\s+(\d+)mm/i;
+    const lineRegex = /^(\S+)\s+connected\s+(primary\s+)?(\d+)x(\d+)\+(\-?\d+)\+(\-?\d+)\s*(\w+)?\s*\(.*?\)\s+(\d+)mm\s+x\s+(\d+)mm/i;
 
     for (const line of output.split('\n')) {
         const match = line.match(lineRegex);
@@ -141,13 +141,14 @@ function _parseXrandrOutput(output) {
             continue;
 
         const name = match[1];
-        const widthPx = Number.parseInt(match[2], 10);
-        const heightPx = Number.parseInt(match[3], 10);
-        const x = Number.parseInt(match[4], 10);
-        const y = Number.parseInt(match[5], 10);
-        const rotation = match[6] || 'normal';
-        let widthMM = Number.parseInt(match[7], 10);
-        let heightMM = Number.parseInt(match[8], 10);
+        const primary = Boolean(match[2]);
+        const widthPx = Number.parseInt(match[3], 10);
+        const heightPx = Number.parseInt(match[4], 10);
+        const x = Number.parseInt(match[5], 10);
+        const y = Number.parseInt(match[6], 10);
+        const rotation = match[7] || 'normal';
+        let widthMM = Number.parseInt(match[8], 10);
+        let heightMM = Number.parseInt(match[9], 10);
 
         if (rotation === 'left' || rotation === 'right') {
             const tmp = widthMM;
@@ -157,6 +158,7 @@ function _parseXrandrOutput(output) {
 
         monitors.push({
             name,
+            primary,
             x,
             y,
             width_px: widthPx,
@@ -166,6 +168,7 @@ function _parseXrandrOutput(output) {
         });
     }
 
+    monitors.sort((a, b) => Number(Boolean(b.primary)) - Number(Boolean(a.primary)) || a.x - b.x || a.y - b.y);
     return monitors;
 }
 
@@ -627,10 +630,16 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
 
     _makeToolButton(label, iconName, onClick) {
         const button = new Gtk.Button({
-            label,
-            icon_name: iconName,
             halign: Gtk.Align.START,
         });
+        const box = new Gtk.Box({
+            orientation: Gtk.Orientation.HORIZONTAL,
+            spacing: 6,
+        });
+        box.append(new Gtk.Image({ icon_name: iconName }));
+        box.append(new Gtk.Label({ label, xalign: 0 }));
+        button.set_child(box);
+        button.set_tooltip_text(label);
         button.connect('clicked', () => onClick());
         return button;
     }
@@ -1084,7 +1093,7 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
 
             cr.setSourceRGBA(1, 1, 1, 0.96);
             cr.moveTo(rect.x + 7, rect.y + 16);
-            cr.showText(`${i + 1}. ${m.name}`);
+            cr.showText(`${i + 1}. ${m.name}${m.primary ? ' primary' : ''}`);
             cr.moveTo(rect.x + 7, rect.y + 31);
             cr.showText(`${m.width_px}x${m.height_px}  ${_monitorDpi(m)} DPI`);
 
@@ -1200,7 +1209,7 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
         });
 
         const title = new Gtk.Label({
-            label: `${index + 1}. ${monitor.name}  |  ${monitor.width_px}x${monitor.height_px}  |  ${_monitorDpi(monitor)} DPI`,
+            label: `${index + 1}. ${monitor.name}${monitor.primary ? ' (primary)' : ''}  |  ${monitor.width_px}x${monitor.height_px}  |  ${_monitorDpi(monitor)} DPI`,
             wrap: true,
             xalign: 0,
             hexpand: true,
