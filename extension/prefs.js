@@ -2,6 +2,8 @@
 // Provides a layout editor and preset helpers for common monitor arrangements.
 
 import Adw from 'gi://Adw';
+import Gdk from 'gi://Gdk';
+import GdkPixbuf from 'gi://GdkPixbuf';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import Gtk from 'gi://Gtk';
@@ -344,9 +346,9 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
     fillPreferencesWindow(window) {
         this._settings = this.getSettings();
         this._imageFitMode = 'cover';
-        this._imageAspectPreset = 'desktop';
         this._showImagePreview = true;
         this._showCursorPaths = true;
+        this._testImagePixbuf = this._loadTestImage();
 
         window.set_default_size(900, 720);
         window.set_search_enabled(false);
@@ -463,25 +465,20 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
             margin_top: 8,
             hexpand: true,
         });
-        imageControls.insert(this._makeComboControl(_('Image'), [
-            ['desktop', _('Use desktop shape')],
-            ['16:9', _('16:9 photo')],
-            ['21:9', _('21:9 ultrawide')],
-            ['32:9', _('32:9 superwide')],
-            ['4:3', _('4:3 image')],
-        ], this._imageAspectPreset, value => {
-            this._imageAspectPreset = value;
-            this._previewArea.queue_draw();
+        imageControls.insert(new Gtk.Label({
+            label: _('Test image: panorama'),
+            xalign: 0,
+            halign: Gtk.Align.START,
         }), -1);
         imageControls.insert(this._makeComboControl(_('Fit'), [
-            ['cover', _('Fill screens')],
-            ['contain', _('Fit whole image')],
-            ['stretch', _('Stretch to desktop')],
+            ['cover', _('Fill: crop edges')],
+            ['contain', _('Fit whole: no crop')],
+            ['stretch', _('Stretch: distort')],
         ], this._imageFitMode, value => {
             this._imageFitMode = value;
             this._previewArea.queue_draw();
         }), -1);
-        imageControls.insert(this._makeSwitchControl(_('Image slices'), this._showImagePreview, value => {
+        imageControls.insert(this._makeSwitchControl(_('Show image'), this._showImagePreview, value => {
             this._showImagePreview = value;
             this._previewArea.queue_draw();
         }), -1);
@@ -708,19 +705,20 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
         };
     }
 
-    _imageAspect(bounds) {
-        switch (this._imageAspectPreset) {
-        case '16:9':
-            return 16 / 9;
-        case '21:9':
-            return 21 / 9;
-        case '32:9':
-            return 32 / 9;
-        case '4:3':
-            return 4 / 3;
-        default:
-            return bounds.width / bounds.height;
+    _loadTestImage() {
+        try {
+            return GdkPixbuf.Pixbuf.new_from_file(`${this.path}/assets/fit-test-panorama.png`);
+        } catch (error) {
+            logError(error, '[DuaScreen] Failed to load bundled fit test image');
+            return null;
         }
+    }
+
+    _imageAspect(bounds) {
+        if (this._testImagePixbuf)
+            return this._testImagePixbuf.get_width() / Math.max(1, this._testImagePixbuf.get_height());
+
+        return bounds.width / bounds.height;
     }
 
     _imageBounds(bounds) {
@@ -760,7 +758,7 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
         };
     }
 
-    _drawImagePattern(cr, imageRect) {
+    _drawFallbackImagePattern(cr, imageRect) {
         cr.setSourceRGBA(0.12, 0.27, 0.46, 1.0);
         cr.rectangle(imageRect.x, imageRect.y, imageRect.width, imageRect.height);
         cr.fill();
@@ -778,20 +776,48 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
             cr.rectangle(imageRect.x + i * bandWidth, imageRect.y, bandWidth, imageRect.height);
             cr.fill();
         }
+    }
 
-        cr.setSourceRGBA(1, 1, 1, 0.30);
-        cr.setLineWidth(2);
-        const step = Math.max(28, imageRect.width / 9);
-        for (let x = imageRect.x - imageRect.height; x < imageRect.x + imageRect.width; x += step) {
-            cr.moveTo(x, imageRect.y + imageRect.height);
-            cr.lineTo(x + imageRect.height, imageRect.y);
-            cr.stroke();
+    _drawTestImage(cr, imageRect) {
+        if (!this._testImagePixbuf) {
+            this._drawFallbackImagePattern(cr, imageRect);
+            return;
         }
 
-        cr.setSourceRGBA(1, 1, 1, 0.22);
-        cr.arc(imageRect.x + imageRect.width * 0.52, imageRect.y + imageRect.height * 0.48,
-            Math.max(18, Math.min(imageRect.width, imageRect.height) * 0.18), 0, Math.PI * 2);
+        cr.save();
+        cr.translate(imageRect.x, imageRect.y);
+        cr.scale(
+            imageRect.width / Math.max(1, this._testImagePixbuf.get_width()),
+            imageRect.height / Math.max(1, this._testImagePixbuf.get_height())
+        );
+        Gdk.cairo_set_source_pixbuf(cr, this._testImagePixbuf, 0, 0);
+        cr.rectangle(0, 0, this._testImagePixbuf.get_width(), this._testImagePixbuf.get_height());
         cr.fill();
+        cr.restore();
+    }
+
+    _drawFitGuides(cr, imageRect, width, height) {
+        cr.setLineWidth(1.4);
+        cr.setSourceRGBA(1, 1, 1, 0.55);
+        cr.rectangle(imageRect.x + 0.5, imageRect.y + 0.5, imageRect.width - 1, imageRect.height - 1);
+        cr.stroke();
+
+        cr.setSourceRGBA(0, 0, 0, 0.50);
+        cr.rectangle(12, 12, Math.min(230, width - 24), 48);
+        cr.fill();
+
+        cr.setSourceRGBA(1, 1, 1, 0.94);
+        cr.moveTo(22, 31);
+        if (this._imageFitMode === 'cover')
+            cr.showText('Fill: crops image edges.');
+        else if (this._imageFitMode === 'contain')
+            cr.showText('Fit whole: no crop.');
+        else
+            cr.showText('Stretch: fills but distorts.');
+
+        cr.setSourceRGBA(1, 1, 1, 0.72);
+        cr.moveTo(22, 49);
+        cr.showText(`Preview area ${Math.round(imageRect.width)}x${Math.round(imageRect.height)} px`);
     }
 
     _drawArrow(cr, x1, y1, x2, y2) {
@@ -832,8 +858,9 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
                 cr.rectangle(rect.x, rect.y, rect.width, rect.height);
             }
             cr.clip();
-            this._drawImagePattern(cr, imageRect);
+            this._drawTestImage(cr, imageRect);
             cr.restore();
+            this._drawFitGuides(cr, imageRect, width, height);
         }
 
         for (let i = 0; i < monitors.length; i++) {
