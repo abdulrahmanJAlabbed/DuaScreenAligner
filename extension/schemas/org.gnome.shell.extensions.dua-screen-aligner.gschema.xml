@@ -56,6 +56,34 @@
       </description>
     </key>
 
+    <!-- Image Source: Selected bundled image id or local. -->
+    <key name="image-source" type="s">
+      <default>'panorama'</default>
+      <summary>Selected image source</summary>
+      <description>
+        The image source used by the preview and wallpaper exporter.
+        Built-in values are panorama, city, desert-coast, or local.
+      </description>
+    </key>
+
+    <!-- Image Local Path: User-selected local image path. -->
+    <key name="image-local-path" type="s">
+      <default>''</default>
+      <summary>Selected local image path</summary>
+      <description>
+        Absolute file path to a user-selected local image for preview and wallpaper export.
+      </description>
+    </key>
+
+    <!-- Open Overlay Request: incremented by preferences to ask the Shell extension to open the editor overlay. -->
+    <key name="open-overlay-request" type="i">
+      <default>0</default>
+      <summary>Open overlay request counter</summary>
+      <description>
+        Incremented by the preferences UI to request opening the on-screen editor overlay.
+      </description>
+    </key>
+
     <!-- Log Level: Daemon diagnostic verbosity. -->
     <key name="log-level" type="s">
       <default>'info'</default>

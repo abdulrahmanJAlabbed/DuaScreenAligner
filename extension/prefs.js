@@ -14,6 +14,29 @@ const DBUS_NAME = 'com.github.duascreenaligner.Daemon';
 const DBUS_PATH = '/com/github/duascreenaligner/Daemon';
 const DBUS_IFACE = 'com.github.duascreenaligner.Daemon';
 
+const BUILTIN_IMAGES = {
+    panorama: 'assets/fit-test-panorama.png',
+    city: 'assets/fit-test-city.png',
+    'desert-coast': 'assets/fit-test-desert-coast.png',
+};
+
+function _imageSourceLabel(source) {
+    switch (source) {
+    case 'city':
+        return _('City skyline');
+    case 'desert-coast':
+        return _('Desert coast');
+    case 'local':
+        return _('Local image');
+    default:
+        return _('Mountain panorama');
+    }
+}
+
+function _safeFilenamePart(value) {
+    return String(value || 'image').replace(/[^A-Za-z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '') || 'image';
+}
+
 function _callDaemon(method, inSignature, outSignature, args) {
     const connection = Gio.bus_get_sync(Gio.BusType.SYSTEM, null);
     const parameters = new GLib.Variant(`(${inSignature})`, args);
@@ -346,10 +369,13 @@ function _monitorDpi(monitor) {
 export default class DuaScreenPreferences extends ExtensionPreferences {
     fillPreferencesWindow(window) {
         this._settings = this.getSettings();
+        this._window = window;
         this._imageFitMode = 'cover';
+        this._imageSource = this._settings.get_string('image-source') || 'panorama';
+        this._localImagePath = this._settings.get_string('image-local-path');
         this._showImagePreview = true;
         this._showCursorPaths = true;
-        this._testImagePixbuf = this._loadTestImage();
+        this._imagePixbuf = this._loadSelectedImage();
 
         window.set_default_size(900, 720);
         window.set_search_enabled(false);
@@ -400,6 +426,7 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
             max_children_per_line: 3,
             hexpand: true,
         });
+        statusButtons.insert(this._makeToolButton(_('Open screen editor'), 'video-display-symbolic', () => this._requestScreenEditor()), -1);
         statusButtons.insert(this._makeToolButton(_('Refresh status'), 'view-refresh-symbolic', () => this._refreshDaemonStatus()), -1);
         statusButtons.insert(this._makeToolButton(_('Apply now'), 'emblem-ok-symbolic', () => this._saveAndApplyLayout()), -1);
         statusButtons.insert(this._makeToolButton(_('Find mice'), 'input-mouse-symbolic', () => this._listDevices()), -1);
@@ -466,11 +493,16 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
             margin_top: 8,
             hexpand: true,
         });
-        imageControls.insert(new Gtk.Label({
-            label: _('Test image: panorama'),
+        imageControls.insert(this._makeImageSourceControl(), -1);
+        imageControls.insert(this._makeToolButton(_('Choose local'), 'document-open-symbolic', () => this._chooseLocalImage()), -1);
+        this._imagePathLabel = new Gtk.Label({
+            label: this._selectedImageSummary(),
+            wrap: true,
             xalign: 0,
             halign: Gtk.Align.START,
-        }), -1);
+            hexpand: true,
+        });
+        imageControls.insert(this._imagePathLabel, -1);
         imageControls.insert(this._makeComboControl(_('Fit'), [
             ['cover', _('Fill: crop edges')],
             ['contain', _('Fit whole: no crop')],
@@ -487,7 +519,7 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
             this._showCursorPaths = value;
             this._previewArea.queue_draw();
         }), -1);
-        imageControls.insert(this._makeToolButton(_('Set desktop'), 'preferences-desktop-wallpaper-symbolic', () => this._setTestImageAsWallpaper()), -1);
+        imageControls.insert(this._makeToolButton(_('Set desktop'), 'preferences-desktop-wallpaper-symbolic', () => this._setSelectedImageAsWallpaper()), -1);
         visualGroup.add(imageControls);
 
         const autoButtons = new Gtk.FlowBox({
@@ -707,18 +739,111 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
         };
     }
 
-    _loadTestImage() {
+    _makeImageSourceControl() {
+        const box = new Gtk.Box({
+            orientation: Gtk.Orientation.HORIZONTAL,
+            spacing: 6,
+            halign: Gtk.Align.START,
+        });
+        box.append(new Gtk.Label({ label: _('Image'), xalign: 0 }));
+
+        this._imageSourceCombo = new Gtk.ComboBoxText();
+        for (const source of ['panorama', 'city', 'desert-coast', 'local'])
+            this._imageSourceCombo.append(source, _imageSourceLabel(source));
+        this._imageSourceCombo.set_active_id(this._imageSource in BUILTIN_IMAGES || this._imageSource === 'local' ? this._imageSource : 'panorama');
+        this._imageSourceCombo.connect('changed', () => {
+            const source = this._imageSourceCombo.get_active_id() || 'panorama';
+            if (source === 'local' && !this._localImagePath) {
+                this._chooseLocalImage();
+                return;
+            }
+            this._setImageSource(source);
+        });
+        box.append(this._imageSourceCombo);
+        return box;
+    }
+
+    _selectedImagePath() {
+        if (this._imageSource === 'local' && this._localImagePath)
+            return this._localImagePath;
+
+        const asset = BUILTIN_IMAGES[this._imageSource] || BUILTIN_IMAGES.panorama;
+        return `${this.path}/${asset}`;
+    }
+
+    _selectedImageSummary() {
+        if (this._imageSource === 'local')
+            return this._localImagePath ? this._localImagePath : _('No local image selected');
+
+        return _imageSourceLabel(this._imageSource);
+    }
+
+    _setImageSource(source, localPath = null) {
+        this._imageSource = source in BUILTIN_IMAGES || source === 'local' ? source : 'panorama';
+        if (localPath !== null)
+            this._localImagePath = localPath;
+
+        this._settings.set_string('image-source', this._imageSource);
+        this._settings.set_string('image-local-path', this._localImagePath || '');
+        this._imagePixbuf = this._loadSelectedImage();
+
+        if (this._imageSourceCombo && this._imageSourceCombo.get_active_id() !== this._imageSource)
+            this._imageSourceCombo.set_active_id(this._imageSource);
+        if (this._imagePathLabel)
+            this._imagePathLabel.label = this._selectedImageSummary();
+        if (this._previewArea)
+            this._previewArea.queue_draw();
+
+        this._status(`${_('Image selected')}: ${this._selectedImageSummary()}`);
+    }
+
+    _chooseLocalImage() {
+        const chooser = new Gtk.FileChooserNative({
+            title: _('Choose image'),
+            transient_for: this._window,
+            action: Gtk.FileChooserAction.OPEN,
+            accept_label: _('Use image'),
+            cancel_label: _('Cancel'),
+        });
+        const filter = new Gtk.FileFilter();
+        filter.set_name(_('Images'));
+        filter.add_pixbuf_formats();
+        chooser.add_filter(filter);
+
+        chooser.connect('response', (dialog, response) => {
+            if (response === Gtk.ResponseType.ACCEPT) {
+                const file = dialog.get_file();
+                const path = file ? file.get_path() : '';
+                if (path)
+                    this._setImageSource('local', path);
+            } else if (this._imageSourceCombo) {
+                this._imageSourceCombo.set_active_id(this._imageSource);
+            }
+            dialog.destroy();
+        });
+        chooser.show();
+    }
+
+    _loadSelectedImage() {
+        const selectedPath = this._selectedImagePath();
         try {
-            return GdkPixbuf.Pixbuf.new_from_file(`${this.path}/assets/fit-test-panorama.png`);
+            return GdkPixbuf.Pixbuf.new_from_file(selectedPath);
         } catch (error) {
-            logError(error, '[DuaScreen] Failed to load bundled fit test image');
+            logError(error, `[DuaScreen] Failed to load selected image: ${selectedPath}`);
+            if (this._imageSource !== 'panorama') {
+                try {
+                    return GdkPixbuf.Pixbuf.new_from_file(`${this.path}/${BUILTIN_IMAGES.panorama}`);
+                } catch (fallbackError) {
+                    logError(fallbackError, '[DuaScreen] Failed to load fallback panorama image');
+                }
+            }
             return null;
         }
     }
 
     _imageAspect(bounds) {
-        if (this._testImagePixbuf)
-            return this._testImagePixbuf.get_width() / Math.max(1, this._testImagePixbuf.get_height());
+        if (this._imagePixbuf)
+            return this._imagePixbuf.get_width() / Math.max(1, this._imagePixbuf.get_height());
 
         return bounds.width / bounds.height;
     }
@@ -780,8 +905,8 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
         }
     }
 
-    _drawTestImage(cr, imageRect) {
-        if (!this._testImagePixbuf) {
+    _drawSelectedImage(cr, imageRect) {
+        if (!this._imagePixbuf) {
             this._drawFallbackImagePattern(cr, imageRect);
             return;
         }
@@ -789,11 +914,11 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
         cr.save();
         cr.translate(imageRect.x, imageRect.y);
         cr.scale(
-            imageRect.width / Math.max(1, this._testImagePixbuf.get_width()),
-            imageRect.height / Math.max(1, this._testImagePixbuf.get_height())
+            imageRect.width / Math.max(1, this._imagePixbuf.get_width()),
+            imageRect.height / Math.max(1, this._imagePixbuf.get_height())
         );
-        Gdk.cairo_set_source_pixbuf(cr, this._testImagePixbuf, 0, 0);
-        cr.rectangle(0, 0, this._testImagePixbuf.get_width(), this._testImagePixbuf.get_height());
+        Gdk.cairo_set_source_pixbuf(cr, this._imagePixbuf, 0, 0);
+        cr.rectangle(0, 0, this._imagePixbuf.get_width(), this._imagePixbuf.get_height());
         cr.fill();
         cr.restore();
     }
@@ -856,7 +981,7 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
             );
         }
         cr.clip();
-        this._drawTestImage(cr, this._wallpaperImageRect(bounds));
+        this._drawSelectedImage(cr, this._wallpaperImageRect(bounds));
         cr.restore();
 
         surface.writeToPNG(outputPath);
@@ -864,12 +989,12 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
         return { outputPath, width: outputWidth, height: outputHeight };
     }
 
-    _setTestImageAsWallpaper() {
+    _setSelectedImageAsWallpaper() {
         try {
             const cacheDir = GLib.build_filenamev([GLib.get_user_cache_dir(), 'dua-screen-aligner']);
             GLib.mkdir_with_parents(cacheDir, 0o755);
 
-            const outputPath = GLib.build_filenamev([cacheDir, `test-wallpaper-${this._imageFitMode}.png`]);
+            const outputPath = GLib.build_filenamev([cacheDir, `wallpaper-${_safeFilenamePart(this._imageSource)}-${this._imageFitMode}.png`]);
             const rendered = this._renderWallpaperPNG(outputPath);
             const uri = GLib.filename_to_uri(outputPath, null);
             const backgroundSettings = new Gio.Settings({ schema_id: 'org.gnome.desktop.background' });
@@ -882,7 +1007,7 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
             Gio.Settings.sync();
             backgroundSettings.apply();
 
-            this._status(`${_('Desktop wallpaper set')}: ${rendered.width}x${rendered.height}px, ${this._imageFitMode}, ${outputPath}`);
+            this._status(`${_('Desktop wallpaper set')}: ${_imageSourceLabel(this._imageSource)}, ${rendered.width}x${rendered.height}px, ${this._imageFitMode}, ${outputPath}`);
         } catch (error) {
             this._status(_('Cannot set desktop wallpaper: ') + error.message);
         }
@@ -926,7 +1051,7 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
                 cr.rectangle(rect.x, rect.y, rect.width, rect.height);
             }
             cr.clip();
-            this._drawTestImage(cr, imageRect);
+            this._drawSelectedImage(cr, imageRect);
             cr.restore();
             this._drawFitGuides(cr, imageRect, width, height);
         }

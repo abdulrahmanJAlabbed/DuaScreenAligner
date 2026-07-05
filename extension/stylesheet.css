@@ -70,3 +70,108 @@
     border-radius: 4px; /* Rounded corners */
     position: absolute; /* Allow precise positioning */
 }
+
+/* ==========================================================================
+ * Full-Screen Editor Overlay
+ * ==========================================================================
+ */
+
+.dua-editor-overlay {
+    background-color: rgba(9, 12, 16, 0.86);
+    color: #f6f5f4;
+}
+
+.dua-editor-header,
+.dua-editor-footer,
+.dua-edge-panel {
+    background-color: rgba(28, 32, 38, 0.92);
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    border-radius: 8px;
+    padding: 10px;
+    spacing: 10px;
+}
+
+.dua-editor-title {
+    font-size: 20px;
+    font-weight: 700;
+    color: #ffffff;
+}
+
+.dua-edge-panel {
+    spacing: 8px;
+}
+
+.dua-panel-heading {
+    font-size: 13px;
+    font-weight: 700;
+    color: #cbd5df;
+    padding-bottom: 4px;
+}
+
+.dua-tool-button {
+    min-height: 34px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    background-color: rgba(255, 255, 255, 0.10);
+    color: #ffffff;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    font-weight: 600;
+}
+
+.dua-tool-button:hover,
+.dua-tool-button:focus {
+    background-color: rgba(255, 255, 255, 0.18);
+}
+
+.dua-primary-button {
+    background-color: #3584e4;
+    border-color: rgba(255, 255, 255, 0.22);
+}
+
+.dua-primary-button:hover,
+.dua-primary-button:focus {
+    background-color: #4990e7;
+}
+
+.dua-map-surface {
+    background-color: rgba(0, 0, 0, 0.28);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 8px;
+}
+
+.dua-monitor-card {
+    background-color: rgba(53, 132, 228, 0.46);
+    border: 2px solid rgba(255, 255, 255, 0.76);
+    border-radius: 7px;
+    color: #ffffff;
+    font-weight: 700;
+    padding: 10px;
+    text-align: left;
+}
+
+.dua-monitor-card:hover,
+.dua-monitor-card:focus {
+    background-color: rgba(53, 132, 228, 0.62);
+}
+
+.dua-monitor-selected {
+    background-color: rgba(246, 211, 45, 0.44);
+    border-color: #f6d32d;
+    color: #ffffff;
+}
+
+.dua-selected-label,
+.dua-status-text {
+    color: #eeeeec;
+    font-size: 13px;
+}
+
+.dua-selected-label {
+    background-color: rgba(255, 255, 255, 0.07);
+    border-radius: 6px;
+    padding: 8px;
+}
+
+.dua-nudge-row {
+    spacing: 8px;
+}
