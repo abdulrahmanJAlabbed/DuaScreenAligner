@@ -2,7 +2,8 @@
 // Provides a layout editor and preset helpers for common monitor arrangements.
 
 import Adw from 'gi://Adw';
-import Gdk from 'gi://Gdk';
+import Cairo from 'cairo';
+import Gdk from 'gi://Gdk?version=4.0';
 import GdkPixbuf from 'gi://GdkPixbuf';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
@@ -486,6 +487,7 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
             this._showCursorPaths = value;
             this._previewArea.queue_draw();
         }), -1);
+        imageControls.insert(this._makeToolButton(_('Set desktop'), 'preferences-desktop-wallpaper-symbolic', () => this._setTestImageAsWallpaper()), -1);
         visualGroup.add(imageControls);
 
         const autoButtons = new Gtk.FlowBox({
@@ -818,6 +820,72 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
         cr.setSourceRGBA(1, 1, 1, 0.72);
         cr.moveTo(22, 49);
         cr.showText(`Preview area ${Math.round(imageRect.width)}x${Math.round(imageRect.height)} px`);
+    }
+
+    _wallpaperImageRect(bounds) {
+        const imageBounds = this._imageBounds(bounds);
+        return {
+            x: imageBounds.x - bounds.minX,
+            y: imageBounds.y - bounds.minY,
+            width: imageBounds.width,
+            height: imageBounds.height,
+        };
+    }
+
+    _renderWallpaperPNG(outputPath) {
+        if (!this._visualLayout || !Array.isArray(this._visualLayout.monitors) || this._visualLayout.monitors.length === 0)
+            throw new Error('load or detect a monitor layout first');
+
+        const monitors = this._visualLayout.monitors;
+        const bounds = this._layoutBounds(monitors);
+        const outputWidth = Math.max(1, Math.round(bounds.width));
+        const outputHeight = Math.max(1, Math.round(bounds.height));
+        const surface = new Cairo.ImageSurface(Cairo.Format.ARGB32, outputWidth, outputHeight);
+        const cr = new Cairo.Context(surface);
+
+        cr.setSourceRGB(0.02, 0.02, 0.025);
+        cr.paint();
+
+        cr.save();
+        for (const monitor of monitors) {
+            cr.rectangle(
+                monitor.x - bounds.minX,
+                monitor.y - bounds.minY,
+                monitor.width_px,
+                monitor.height_px
+            );
+        }
+        cr.clip();
+        this._drawTestImage(cr, this._wallpaperImageRect(bounds));
+        cr.restore();
+
+        surface.writeToPNG(outputPath);
+        surface.finish();
+        return { outputPath, width: outputWidth, height: outputHeight };
+    }
+
+    _setTestImageAsWallpaper() {
+        try {
+            const cacheDir = GLib.build_filenamev([GLib.get_user_cache_dir(), 'dua-screen-aligner']);
+            GLib.mkdir_with_parents(cacheDir, 0o755);
+
+            const outputPath = GLib.build_filenamev([cacheDir, `test-wallpaper-${this._imageFitMode}.png`]);
+            const rendered = this._renderWallpaperPNG(outputPath);
+            const uri = GLib.filename_to_uri(outputPath, null);
+            const backgroundSettings = new Gio.Settings({ schema_id: 'org.gnome.desktop.background' });
+
+            backgroundSettings.reset('picture-uri');
+            backgroundSettings.reset('picture-uri-dark');
+            backgroundSettings.set_string('picture-uri', uri);
+            backgroundSettings.set_string('picture-uri-dark', uri);
+            backgroundSettings.set_string('picture-options', 'spanned');
+            Gio.Settings.sync();
+            backgroundSettings.apply();
+
+            this._status(`${_('Desktop wallpaper set')}: ${rendered.width}x${rendered.height}px, ${this._imageFitMode}, ${outputPath}`);
+        } catch (error) {
+            this._status(_('Cannot set desktop wallpaper: ') + error.message);
+        }
     }
 
     _drawArrow(cr, x1, y1, x2, y2) {
