@@ -234,7 +234,6 @@ export default class DuaScreenAlignerExtension extends Extension {
         this._changedIds = [
             this._settings.connect('changed::monitor-layout', () => this._scheduleSync()),
             this._settings.connect('changed::enabled', () => this._scheduleSync()),
-            this._settings.connect('changed::input-device', () => this._scheduleSync()),
             this._settings.connect('changed::open-overlay-request', () => this._handleOverlayRequest()),
         ];
 
@@ -305,14 +304,12 @@ export default class DuaScreenAlignerExtension extends Extension {
             return;
 
         const layoutJSON = this._settings.get_string('monitor-layout');
-        const inputDevice = this._settings.get_string('input-device').trim();
         const enabled = this._settings.get_boolean('enabled');
 
         if (layoutJSON && layoutJSON.trim().length > 0) {
             try {
                 const layout = JSON.parse(layoutJSON);
-                if (inputDevice)
-                    layout.device_path = inputDevice;
+                layout.device_path = '';
 
                 const result = _callDaemon('SetLayout', 's', 'b', [JSON.stringify(layout)]);
                 if (_deepUnpackBoolean(result))
@@ -350,16 +347,34 @@ export default class DuaScreenAlignerExtension extends Extension {
             return;
 
         const layout = _cloneLayout(this._overlayLayout);
-        layout.device_path = this._settings.get_string('input-device').trim();
+        layout.device_path = '';
         this._settings.set_string('monitor-layout', JSON.stringify(layout, null, 2));
         this._setOverlayStatus(applyNow ? 'Saved and applied layout.' : 'Saved layout.');
         if (applyNow)
             this._syncSettingsToDaemon();
     }
 
+    _desktopBounds() {
+        const monitors = Main.layoutManager.monitors?.length ? Main.layoutManager.monitors : [Main.layoutManager.primaryMonitor];
+        let minX = monitors[0].x;
+        let minY = monitors[0].y;
+        let maxX = monitors[0].x + monitors[0].width;
+        let maxY = monitors[0].y + monitors[0].height;
+
+        for (const monitor of monitors) {
+            minX = Math.min(minX, monitor.x);
+            minY = Math.min(minY, monitor.y);
+            maxX = Math.max(maxX, monitor.x + monitor.width);
+            maxY = Math.max(maxY, monitor.y + monitor.height);
+        }
+
+        return { x: minX, y: minY, width: Math.max(1, maxX - minX), height: Math.max(1, maxY - minY) };
+    }
+
     _openOverlay() {
         if (this._overlay) {
-            this._closeOverlay();
+            global.stage.set_key_focus(this._overlay);
+            this._setOverlayStatus('Screen editor is already open.');
             return;
         }
 
@@ -367,7 +382,7 @@ export default class DuaScreenAlignerExtension extends Extension {
         if (this._selectedMonitorIndex >= this._overlayLayout.monitors.length)
             this._selectedMonitorIndex = 0;
 
-        const monitor = Main.layoutManager.primaryMonitor;
+        const monitor = this._desktopBounds();
         this._overlay = new St.Widget({
             style_class: 'dua-editor-overlay',
             reactive: true,
@@ -385,6 +400,12 @@ export default class DuaScreenAlignerExtension extends Extension {
         });
 
         Main.layoutManager.uiGroup.add_child(this._overlay);
+        try {
+            this._modalToken = Main.pushModal(this._overlay);
+        } catch (error) {
+            logError(error, '[DuaScreen] Failed to make screen editor modal');
+            this._modalToken = null;
+        }
         global.stage.set_key_focus(this._overlay);
         this._buildOverlayChrome(monitor.width, monitor.height);
         this._refreshOverlayMap();
@@ -394,6 +415,19 @@ export default class DuaScreenAlignerExtension extends Extension {
     _closeOverlay() {
         if (!this._overlay)
             return;
+
+        if (this._modalToken !== undefined) {
+            try {
+                Main.popModal(this._modalToken ?? this._overlay);
+            } catch (error) {
+                try {
+                    Main.popModal(this._overlay);
+                } catch (fallbackError) {
+                    logError(fallbackError, '[DuaScreen] Failed to release screen editor modal grab');
+                }
+            }
+            this._modalToken = undefined;
+        }
 
         this._overlay.destroy();
         this._overlay = null;
@@ -435,7 +469,7 @@ export default class DuaScreenAlignerExtension extends Extension {
         left.add_child(new St.Label({ text: 'Auto align', style_class: 'dua-panel-heading' }));
         left.add_child(this._button('Detect current', () => {
             try {
-                this._overlayLayout = _detectLayoutFromXrandr(this._settings.get_string('input-device').trim());
+                this._overlayLayout = _detectLayoutFromXrandr();
                 this._selectedMonitorIndex = 0;
                 this._refreshOverlayMap();
                 this._setOverlayStatus('Detected current GNOME monitor geometry.');

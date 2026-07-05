@@ -378,6 +378,8 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
         this._localImagePath = this._settings.get_string('image-local-path');
         this._showImagePreview = true;
         this._showCursorPaths = true;
+        if (this._settings.get_string("input-device"))
+            this._settings.set_string("input-device", "");
         this._imagePixbuf = this._loadSelectedImage();
 
         window.set_default_size(900, 720);
@@ -441,8 +443,8 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
         page.add(startGroup);
 
         const imageGroup = new Adw.PreferencesGroup({
-            title: _('Wallpaper image'),
-            description: _('Choose the image and fit mode used when setting the desktop background.'),
+            title: _('Desktop background'),
+            description: _('Choose a built-in image or a local image, then set it as the desktop wallpaper.'),
         });
 
         const imageBox = new Gtk.Box({
@@ -460,7 +462,7 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
             hexpand: true,
         });
         imageRow.insert(this._makeImageSourceControl(), -1);
-        imageRow.insert(this._makeToolButton(_('Choose local image'), 'document-open-symbolic', () => this._chooseLocalImage()), -1);
+        imageRow.insert(this._makeToolButton(_('Choose image'), 'document-open-symbolic', () => this._chooseLocalImage()), -1);
         imageRow.insert(this._makeComboControl(_('Fit'), [
             ['cover', _('Fill: crop edges')],
             ['contain', _('Fit whole: no crop')],
@@ -477,42 +479,19 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
             hexpand: true,
         });
         imageBox.append(this._imagePathLabel);
-        imageBox.append(this._makeToolButton(_('Set desktop wallpaper'), 'preferences-desktop-wallpaper-symbolic', () => this._setSelectedImageAsWallpaper()));
+        const setWallpaperButton = this._makeToolButton(_('Set as desktop wallpaper'), 'preferences-desktop-wallpaper-symbolic', () => this._setSelectedImageAsWallpaper());
+        setWallpaperButton.add_css_class('suggested-action');
+        imageBox.append(setWallpaperButton);
         imageGroup.add(imageBox);
         page.add(imageGroup);
 
         const settingsGroup = new Adw.PreferencesGroup({
             title: _('Mouse correction'),
+            description: _('Cursor correction uses automatic mouse detection. No device path is needed.'),
         });
         settingsGroup.add(this._makeSwitchRow(_('Enable correction'), _('DPI-aware cursor motion is sent to the daemon.'), 'enabled'));
         settingsGroup.add(this._makeSwitchRow(_('Start automatically'), _('Launch the daemon on login.'), 'auto-start'));
-
-        const inputRow = new Adw.ActionRow({
-            title: _('Mouse device'),
-            subtitle: _('Leave empty for auto-detect.'),
-        });
-        this._inputDeviceEntry = new Gtk.Entry({
-            hexpand: true,
-            placeholder_text: '/dev/input/event5',
-            text: this._settings.get_string('input-device'),
-        });
-        this._inputDeviceEntry.set_width_chars(18);
-        this._inputDeviceEntry.connect('changed', () => {
-            this._settings.set_string('input-device', this._inputDeviceEntry.text.trim());
-        });
-        inputRow.add_suffix(this._inputDeviceEntry);
-        settingsGroup.add(inputRow);
         page.add(settingsGroup);
-
-        this._statusLabel = new Gtk.Label({
-            label: '',
-            wrap: true,
-            xalign: 0,
-            hexpand: true,
-        });
-        const statusGroup = new Adw.PreferencesGroup({ title: _('Last action') });
-        statusGroup.add(this._statusLabel);
-        page.add(statusGroup);
 
         this._refreshLayoutStatsFromSettings();
         this._refreshDaemonStatus();
@@ -740,6 +719,46 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
         return row;
     }
 
+    _requestScreenEditor() {
+        const nextValue = this._settings.get_int('open-overlay-request') + 1;
+        this._settings.set_int('open-overlay-request', nextValue);
+        this._status(_('Opening screen editor...'));
+
+        if (this._window) {
+            GLib.timeout_add(GLib.PRIORITY_DEFAULT, 120, () => {
+                this._window.close();
+                return GLib.SOURCE_REMOVE;
+            });
+        }
+    }
+
+    _detectAndSaveCurrentLayout() {
+        try {
+            const detected = _detectLayoutFromXrandr();
+            const normalized = this._normalizeLayoutPayload(JSON.stringify(detected));
+            this._settings.set_string('monitor-layout', normalized);
+            this._refreshLayoutStats(JSON.parse(normalized));
+            this._status(_('Detected and saved the current monitor layout.'));
+        } catch (error) {
+            this._status(_('Unable to detect monitors: ') + error.message);
+        }
+    }
+
+    _applySavedLayout() {
+        try {
+            const text = this._settings.get_string('monitor-layout') || _portraitLeftMainCenterPreset();
+            const normalized = this._normalizeLayoutPayload(text);
+            this._settings.set_string('monitor-layout', normalized);
+            _callDaemon('SetLayout', 's', 'b', [normalized]);
+            _callDaemon('SetEnabled', 'b', 'b', [this._settings.get_boolean('enabled')]);
+            this._refreshLayoutStats(JSON.parse(normalized));
+            this._refreshDaemonStatus();
+            this._status(_('Applied saved monitor layout.'));
+        } catch (error) {
+            this._status(_('Cannot apply saved layout: ') + error.message);
+        }
+    }
+
     _setLayoutText(text) {
         this._layoutBuffer.set_text(text, -1);
         this._loadVisualFromBuffer();
@@ -748,8 +767,7 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
 
     _detectCurrentLayout() {
         try {
-            const inputDevice = this._settings.get_string('input-device').trim();
-            const detected = _detectLayoutFromXrandr(inputDevice);
+            const detected = _detectLayoutFromXrandr();
             this._layoutBuffer.set_text(detected, -1);
             this._loadVisualFromBuffer();
             this._status(_('Detected current monitor layout from xrandr. Save or apply it to the daemon.'));
@@ -876,8 +894,16 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
             if (response === Gtk.ResponseType.ACCEPT) {
                 const file = dialog.get_file();
                 const path = file ? file.get_path() : '';
-                if (path)
-                    this._setImageSource('local', path);
+                if (path) {
+                    try {
+                        GdkPixbuf.Pixbuf.new_from_file(path);
+                        this._setImageSource('local', path);
+                    } catch (error) {
+                        this._status(_('Cannot load local image: ') + error.message);
+                        if (this._imageSourceCombo)
+                            this._imageSourceCombo.set_active_id(this._imageSource);
+                    }
+                }
             } else if (this._imageSourceCombo) {
                 this._imageSourceCombo.set_active_id(this._imageSource);
             }
@@ -891,7 +917,9 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
         try {
             return GdkPixbuf.Pixbuf.new_from_file(selectedPath);
         } catch (error) {
-            logError(error, `[DuaScreen] Failed to load selected image: ${selectedPath}`);
+            logError(error, `[DuaScreen] Failed to load selected image: `);
+            if (this._imageSource === 'local')
+                return null;
             if (this._imageSource !== 'panorama') {
                 try {
                     return GdkPixbuf.Pixbuf.new_from_file(`${this.path}/${BUILTIN_IMAGES.panorama}`);
@@ -1022,7 +1050,7 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
     _renderWallpaperPNG(outputPath) {
         let layout;
         try {
-            layout = JSON.parse(_detectLayoutFromXrandr(this._settings.get_string('input-device').trim()));
+            layout = JSON.parse(_detectLayoutFromXrandr());
         } catch (error) {
             const saved = this._settings.get_string('monitor-layout');
             layout = saved && saved.trim().length > 0 ? JSON.parse(saved) : this._visualLayout;
@@ -1060,6 +1088,9 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
 
     _setSelectedImageAsWallpaper() {
         try {
+            this._imagePixbuf = this._loadSelectedImage();
+            if (!this._imagePixbuf)
+                throw new Error(this._imageSource === 'local' ? 'Choose a readable local image first' : 'Selected image cannot be loaded');
             const cacheDir = GLib.build_filenamev([GLib.get_user_cache_dir(), 'dua-screen-aligner']);
             GLib.mkdir_with_parents(cacheDir, 0o755);
 
@@ -1420,7 +1451,7 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
 
     _normalizeLayoutPayload(text) {
         const layout = JSON.parse(this._validateLayout(text));
-        layout.device_path = this._settings.get_string('input-device').trim();
+        layout.device_path = '';
         return JSON.stringify(layout, null, 2);
     }
 
