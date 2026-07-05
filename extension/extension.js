@@ -522,6 +522,8 @@ export default class DuaScreenAlignerExtension extends Extension {
         this._overlayLayout = _cloneLayout(this._loadLayout());
         if (this._selectedMonitorIndex >= this._overlayLayout.monitors.length)
             this._selectedMonitorIndex = 0;
+        if (this._backgroundVisible === undefined)
+            this._backgroundVisible = true;
 
         const monitor = this._desktopBounds();
         this._overlay = new St.Widget({
@@ -578,6 +580,8 @@ export default class DuaScreenAlignerExtension extends Extension {
         this._monitorActors = null;
         this._dragState = null;
         this._overlayStatusLabel = null;
+        this._backgroundToggle = null;
+        this._selectedLabel = null;
     }
 
     _button(label, callback, styleClass = 'dua-tool-button') {
@@ -597,67 +601,41 @@ export default class DuaScreenAlignerExtension extends Extension {
         header.set_position(18, 14);
         header.set_size(width - 36, 54);
         header.add_child(new St.Label({
-            text: 'DuaScreen Aligner',
+            text: 'Screen alignment',
             style_class: 'dua-editor-title',
             y_align: Clutter.ActorAlign.CENTER,
         }));
-        const spacer = new St.Widget({ x_expand: true });
-        header.add_child(spacer);
-        header.add_child(this._button('Save', () => this._saveOverlayLayout(false)));
-        header.add_child(this._button('Apply', () => this._saveOverlayLayout(true), 'dua-tool-button dua-primary-button'));
+        header.add_child(new St.Widget({ x_expand: true }));
+        header.add_child(this._button('Apply layout', () => this._applyOverlayLayoutToCompositor('Applied layout'), 'dua-tool-button dua-primary-button'));
         header.add_child(this._button('Close', () => this._closeOverlay()));
         this._overlay.add_child(header);
 
-        const left = new St.BoxLayout({ vertical: true, style_class: 'dua-edge-panel' });
-        left.set_position(18, 86);
-        left.set_size(226, Math.max(260, height - 172));
-        left.add_child(new St.Label({ text: 'Fix mouse crossing', style_class: 'dua-panel-heading' }));
-        left.add_child(new St.Label({ text: 'Line up screens so the cursor crosses at the same height.', style_class: 'dua-panel-hint' }));
-        left.add_child(this._button('Align tops', () => this._applyAnchorAlignment('tops')));
-        left.add_child(this._button('Align centers', () => this._applyAnchorAlignment('centers'), 'dua-tool-button dua-primary-button'));
-        left.add_child(this._button('Align bottoms', () => this._applyAnchorAlignment('bottoms')));
-        left.add_child(new St.Label({ text: 'Presets', style_class: 'dua-panel-heading' }));
-        left.add_child(this._button('Recommended', () => this._applyPreset('recommended')));
-        left.add_child(this._button('Match GNOME', () => this._applyPreset('detect')));
-        left.add_child(this._button('Side by side', () => this._applyPreset('side-by-side')));
-        left.add_child(this._button('Stack', () => this._applyPreset('stack')));
-        left.add_child(this._button('Portrait left', () => this._applyPreset('portrait-left')));
-        left.add_child(this._button('Portrait right', () => this._applyPreset('portrait-right')));
-        left.add_child(this._button('Main top', () => this._applyPreset('main-top')));
-        left.add_child(this._button('Main bottom', () => this._applyPreset('main-bottom')));
-        left.add_child(this._button('Grid', () => this._applyPreset('grid')));
-        this._overlay.add_child(left);
-
-        const right = new St.BoxLayout({ vertical: true, style_class: 'dua-edge-panel' });
-        right.set_position(Math.max(260, width - 270), 86);
-        right.set_size(252, Math.max(260, height - 172));
-        right.add_child(new St.Label({ text: 'Selected screen', style_class: 'dua-panel-heading' }));
-        this._selectedLabel = new St.Label({ text: '', style_class: 'dua-selected-label' });
-        right.add_child(this._selectedLabel);
-        right.add_child(new St.Label({ text: 'Image split', style_class: 'dua-panel-heading' }));
-        right.add_child(this._button('Global image', () => this._setCropMode('global')));
-        right.add_child(this._button('Edit selected crop', () => this._setCropMode('per-monitor'), 'dua-tool-button dua-primary-button'));
-        const zoomRow = new St.BoxLayout({ style_class: 'dua-nudge-row' });
-        zoomRow.add_child(this._button('Zoom -', () => this._adjustSelectedCrop(0, 0, -0.08)));
-        zoomRow.add_child(this._button('Zoom +', () => this._adjustSelectedCrop(0, 0, 0.08)));
-        right.add_child(zoomRow);
-        right.add_child(this._button('Image up', () => this._adjustSelectedCrop(0, -24, 0)));
-        const imageRow = new St.BoxLayout({ style_class: 'dua-nudge-row' });
-        imageRow.add_child(this._button('Image left', () => this._adjustSelectedCrop(-24, 0, 0)));
-        imageRow.add_child(this._button('Image right', () => this._adjustSelectedCrop(24, 0, 0)));
-        right.add_child(imageRow);
-        right.add_child(this._button('Image down', () => this._adjustSelectedCrop(0, 24, 0)));
-        right.add_child(this._button('Reset selected crop', () => this._resetSelectedCrop()));
-        right.add_child(this._button('Snap monitors to origin', () => {
-            _normalizeToOrigin(this._overlayLayout);
-            this._refreshOverlayMap();
-            this._setOverlayStatus('Normalized monitor layout to top-left origin.');
+        const rail = new St.BoxLayout({ vertical: true, style_class: 'dua-edge-panel' });
+        rail.set_position(18, 86);
+        rail.set_size(238, Math.max(260, height - 172));
+        rail.add_child(new St.Label({ text: 'Line up your screens', style_class: 'dua-panel-heading' }));
+        rail.add_child(new St.Label({
+            text: 'Pick where the cursor should cross evenly between screens.',
+            style_class: 'dua-panel-hint',
         }));
-        this._overlay.add_child(right);
+        rail.add_child(this._button('Align tops', () => this._applyAnchorAlignment('tops')));
+        rail.add_child(this._button('Align centers', () => this._applyAnchorAlignment('centers'), 'dua-tool-button dua-primary-button'));
+        rail.add_child(this._button('Align bottoms', () => this._applyAnchorAlignment('bottoms')));
+
+        rail.add_child(new St.Label({ text: 'Background', style_class: 'dua-panel-heading' }));
+        this._backgroundToggle = this._button(
+            this._backgroundVisible ? 'Hide wallpaper' : 'Show wallpaper',
+            () => this._toggleBackground()
+        );
+        rail.add_child(this._backgroundToggle);
+
+        rail.add_child(new St.Label({ text: 'Or drag a screen, then Apply layout.', style_class: 'dua-panel-hint' }));
+        rail.add_child(this._button('Reset to system layout', () => this._applyPreset('detect')));
+        this._overlay.add_child(rail);
 
         this._mapLayer = new St.Widget({ style_class: 'dua-map-surface', reactive: true });
-        this._mapLayer.set_position(262, 86);
-        this._mapLayer.set_size(Math.max(320, width - 550), Math.max(260, height - 172));
+        this._mapLayer.set_position(276, 86);
+        this._mapLayer.set_size(Math.max(320, width - 300), Math.max(260, height - 172));
         this._overlay.add_child(this._mapLayer);
 
         const footer = new St.BoxLayout({ style_class: 'dua-editor-footer' });
@@ -670,6 +648,41 @@ export default class DuaScreenAlignerExtension extends Extension {
         });
         footer.add_child(this._overlayStatusLabel);
         this._overlay.add_child(footer);
+    }
+
+    _toggleBackground() {
+        this._backgroundVisible = !this._backgroundVisible;
+        if (this._backgroundToggle)
+            this._backgroundToggle.label = this._backgroundVisible ? 'Hide wallpaper' : 'Show wallpaper';
+        this._refreshOverlayMap();
+    }
+
+    // Push the current schematic (including manual drags) to the compositor.
+    _applyOverlayLayoutToCompositor(verb = 'Applied layout') {
+        if (!this._overlayLayout?.monitors?.length)
+            return;
+
+        let state;
+        try {
+            state = getCurrentState();
+        } catch (error) {
+            this._setOverlayStatus(`Cannot read display config: ${error.message}`);
+            return;
+        }
+
+        const positions = {};
+        for (const monitor of this._overlayLayout.monitors)
+            positions[monitor.name] = { x: monitor.x, y: monitor.y };
+
+        try {
+            applyPositions(state, positions, APPLY_PERSISTENT);
+        } catch (error) {
+            this._setOverlayStatus(`Couldn't apply — screens must stay touching. (${error.message})`);
+            return;
+        }
+
+        this._saveOverlayLayout(true);
+        this._setOverlayStatus(`${verb}. Move the cursor across the seam to check it.`);
     }
 
     _layoutBounds(monitors) {
@@ -758,6 +771,11 @@ export default class DuaScreenAlignerExtension extends Extension {
     }
 
     _applyMapWallpaperStyle() {
+        if (!this._backgroundVisible) {
+            this._mapLayer.style = 'background-color: rgba(10, 12, 14, 0.55);';
+            return;
+        }
+
         const uri = this._selectedImageUri();
         const fit = this._settings.get_string('image-fit-mode') || 'cover';
         let size = 'cover';
@@ -791,6 +809,8 @@ export default class DuaScreenAlignerExtension extends Extension {
     }
 
     _monitorWallpaperStyle(monitor, cardWidth, cardHeight) {
+        if (!this._backgroundVisible)
+            return '';
         if ((this._settings.get_string('image-crop-mode') || 'global') !== 'per-monitor')
             return '';
 
@@ -875,7 +895,8 @@ export default class DuaScreenAlignerExtension extends Extension {
         this._overlayLayout = this._reloadLayoutFromXrandr(state, sorted, positions);
         this._selectedMonitorIndex = 0;
         this._refreshOverlayMap();
-        this._setOverlayStatus(`Applied ${anchor} alignment. Save to keep.`);
+        this._saveOverlayLayout(true);
+        this._setOverlayStatus(`Aligned ${anchor}. Move the cursor across the seam to check it.`);
     }
 
     // Build a fresh overlay-layout payload from the known Mutter state + xrandr
@@ -1007,7 +1028,7 @@ export default class DuaScreenAlignerExtension extends Extension {
         const monitor = this._overlayLayout.monitors[this._dragState.index];
         this._dragState = null;
         this._refreshOverlayMap();
-        this._setOverlayStatus(`Moved ${monitor.name} to x ${monitor.x}, y ${monitor.y}. Save or Apply when ready.`);
+        this._setOverlayStatus(`Moved ${monitor.name} to x ${monitor.x}, y ${monitor.y}. Press Apply layout to keep it.`);
         return Clutter.EVENT_STOP;
     }
 
@@ -1019,46 +1040,6 @@ export default class DuaScreenAlignerExtension extends Extension {
             logError(error, '[DuaScreen] Failed to parse image crop settings');
             return {};
         }
-    }
-
-    _selectedCropKey() {
-        const monitor = this._overlayLayout?.monitors?.[this._selectedMonitorIndex];
-        return monitor ? (monitor.name || `${monitor.width_px}x${monitor.height_px}`) : '';
-    }
-
-    _setCropMode(mode) {
-        this._settings.set_string('image-crop-mode', mode);
-        this._refreshOverlayMap();
-        this._setOverlayStatus(mode === 'per-monitor' ? 'Editing image crop for the selected screen.' : 'Using one image placement across the whole desktop.');
-    }
-
-    _adjustSelectedCrop(dx, dy, dScale) {
-        const key = this._selectedCropKey();
-        if (!key)
-            return;
-
-        this._settings.set_string('image-crop-mode', 'per-monitor');
-        const crops = this._loadImageCrops();
-        const crop = crops[key] || { x: 0, y: 0, scale: 1 };
-        crop.x = Math.round((Number(crop.x) || 0) + dx);
-        crop.y = Math.round((Number(crop.y) || 0) + dy);
-        crop.scale = Math.max(0.3, Math.min(4, Math.round(((Number(crop.scale) || 1) + dScale) * 100) / 100));
-        crops[key] = crop;
-        this._settings.set_string('image-crops', JSON.stringify(crops));
-        this._refreshSelectedLabel();
-        this._setOverlayStatus(`Adjusted image crop for ${key}. Use Set as desktop wallpaper from prefs to render it.`);
-    }
-
-    _resetSelectedCrop() {
-        const key = this._selectedCropKey();
-        if (!key)
-            return;
-
-        const crops = this._loadImageCrops();
-        delete crops[key];
-        this._settings.set_string('image-crops', JSON.stringify(crops));
-        this._refreshSelectedLabel();
-        this._setOverlayStatus(`Reset image crop for ${key}.`);
     }
 
     _refreshSelectedLabel() {
