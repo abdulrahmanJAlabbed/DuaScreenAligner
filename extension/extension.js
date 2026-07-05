@@ -871,6 +871,7 @@ export default class DuaScreenAlignerExtension extends Extension {
             return;
         }
 
+        this._settings.set_string('wallpaper-anchor', anchor);
         this._overlayLayout = this._reloadLayoutFromXrandr(state, sorted, positions);
         this._selectedMonitorIndex = 0;
         this._refreshOverlayMap();

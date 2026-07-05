@@ -1094,6 +1094,102 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
         };
     }
 
+    // A monitor's physical size in millimeters, falling back to a 96 DPI
+    // estimate when EDID data is missing.
+    _monitorMM(monitor) {
+        const widthMM = monitor.width_mm > 0 ? monitor.width_mm : (monitor.width_px / 96) * 25.4;
+        const heightMM = monitor.height_mm > 0 ? monitor.height_mm : (monitor.height_px / 96) * 25.4;
+        return { widthMM, heightMM };
+    }
+
+    // True when monitors sit left-to-right (side by side) with little
+    // horizontal overlap — the case the physical canvas models.
+    _isHorizontalArrangement(monitors) {
+        if (monitors.length < 2)
+            return true;
+        const sorted = [...monitors].sort((a, b) => a.x - b.x);
+        for (let i = 1; i < sorted.length; i++) {
+            if (sorted[i].x < sorted[i - 1].x + sorted[i - 1].width_px * 0.5)
+                return false;
+        }
+        return true;
+    }
+
+    // Build a shared physical (millimeter) canvas: monitors placed side by
+    // side touching by true physical width, aligned vertically by the chosen
+    // anchor. This is what makes the image continuous across the seam.
+    _physicalCanvas(monitors, anchor) {
+        const ordered = [...monitors].sort((a, b) => a.x - b.x || a.y - b.y);
+        const items = ordered.map(monitor => {
+            const { widthMM, heightMM } = this._monitorMM(monitor);
+            return { monitor, widthMM, heightMM };
+        });
+
+        let cursorX = 0;
+        for (const item of items) {
+            item.physX = cursorX;
+            item.physW = item.widthMM;
+            cursorX += item.widthMM;
+        }
+
+        const ref = items.find(item => item.monitor.primary) ||
+            items.reduce((a, b) => (b.heightMM > a.heightMM ? b : a), items[0]);
+        for (const item of items) {
+            if (anchor === 'tops')
+                item.physY = 0;
+            else if (anchor === 'bottoms')
+                item.physY = ref.heightMM - item.heightMM;
+            else
+                item.physY = (ref.heightMM - item.heightMM) / 2;
+            item.physH = item.heightMM;
+        }
+
+        let minY = Infinity;
+        let maxY = -Infinity;
+        for (const item of items) {
+            minY = Math.min(minY, item.physY);
+            maxY = Math.max(maxY, item.physY + item.physH);
+        }
+        for (const item of items)
+            item.physY -= minY;
+
+        return { items, width: cursorX, height: maxY - minY };
+    }
+
+    // Draw the source image across the physical canvas, then clip each
+    // monitor's true physical slice into its pixel rectangle. destOf maps a
+    // monitor to its {x,y,width,height} in the target surface.
+    _drawPhysicalWallpaper(cr, monitors, anchor, destOf) {
+        const canvas = this._physicalCanvas(monitors, anchor);
+        const imageRect = this._imageBounds({ minX: 0, minY: 0, width: canvas.width, height: canvas.height });
+        const imgW = this._imagePixbuf ? Math.max(1, this._imagePixbuf.get_width()) : 1;
+        const imgH = this._imagePixbuf ? Math.max(1, this._imagePixbuf.get_height()) : 1;
+        const pxPerMmX = imgW / imageRect.width;
+        const pxPerMmY = imgH / imageRect.height;
+
+        for (const item of canvas.items) {
+            const dest = destOf(item.monitor);
+            const srcX = (item.physX - imageRect.x) * pxPerMmX;
+            const srcY = (item.physY - imageRect.y) * pxPerMmY;
+            const srcW = item.physW * pxPerMmX;
+            const srcH = item.physH * pxPerMmY;
+
+            cr.save();
+            cr.rectangle(dest.x, dest.y, dest.width, dest.height);
+            cr.clip();
+            if (this._imagePixbuf && srcW > 0 && srcH > 0) {
+                cr.translate(dest.x, dest.y);
+                cr.scale(dest.width / srcW, dest.height / srcH);
+                cr.translate(-srcX, -srcY);
+                Gdk.cairo_set_source_pixbuf(cr, this._imagePixbuf, 0, 0);
+                cr.rectangle(srcX, srcY, srcW, srcH);
+                cr.fill();
+            } else {
+                this._drawFallbackImagePattern(cr, { x: dest.x, y: dest.y, width: dest.width, height: dest.height });
+            }
+            cr.restore();
+        }
+    }
     _renderWallpaperPNG(outputPath) {
         let layout;
         try {
@@ -1120,6 +1216,14 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
             const crops = this._loadImageCrops();
             for (const monitor of monitors)
                 this._drawSelectedImageForMonitor(cr, monitor, bounds, crops[this._monitorCropKey(monitor)] || {});
+        } else if (this._isHorizontalArrangement(monitors)) {
+            const anchor = this._settings.get_string('wallpaper-anchor') || 'centers';
+            this._drawPhysicalWallpaper(cr, monitors, anchor, monitor => ({
+                x: monitor.x - bounds.minX,
+                y: monitor.y - bounds.minY,
+                width: monitor.width_px,
+                height: monitor.height_px,
+            }));
         } else {
             cr.save();
             for (const monitor of monitors) {
@@ -1199,14 +1303,20 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
         cr.setFontSize(11);
 
         if (this._showImagePreview) {
-            cr.save();
-            for (const m of monitors) {
-                const rect = this._toPreviewRect(m, transform);
-                cr.rectangle(rect.x, rect.y, rect.width, rect.height);
+            const cropMode = this._settings.get_string('image-crop-mode') || 'global';
+            if (cropMode !== 'per-monitor' && this._isHorizontalArrangement(monitors)) {
+                const anchor = this._settings.get_string('wallpaper-anchor') || 'centers';
+                this._drawPhysicalWallpaper(cr, monitors, anchor, m => this._toPreviewRect(m, transform));
+            } else {
+                cr.save();
+                for (const m of monitors) {
+                    const rect = this._toPreviewRect(m, transform);
+                    cr.rectangle(rect.x, rect.y, rect.width, rect.height);
+                }
+                cr.clip();
+                this._drawSelectedImage(cr, imageRect);
+                cr.restore();
             }
-            cr.clip();
-            this._drawSelectedImage(cr, imageRect);
-            cr.restore();
             this._drawFitGuides(cr, imageRect, width, height);
         }
 

@@ -89,6 +89,13 @@
       <description>Use one global image placement or separate crop placement per monitor.</description>
     </key>
 
+    <!-- Wallpaper Anchor: tops, centers, or bottoms. Physical vertical reference used to align the image across monitors. -->
+    <key name="wallpaper-anchor" type="s">
+      <default>'centers'</default>
+      <summary>Wallpaper physical alignment anchor</summary>
+      <description>Vertical reference (tops, centers, bottoms) used to place the image continuously across physically different monitors.</description>
+    </key>
+
     <!-- Image Crops: JSON map of monitor name to x, y, and scale adjustments. -->
     <key name="image-crops" type="s">
       <default>'{}'</default>
