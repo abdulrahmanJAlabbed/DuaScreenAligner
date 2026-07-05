@@ -158,6 +158,126 @@ function _detectLayoutFromXrandr(devicePath = '') {
     return _layoutJSON(monitors, devicePath);
 }
 
+function _cloneLayout(layout) {
+    return JSON.parse(JSON.stringify(layout));
+}
+
+function _normalizeToOrigin(layout) {
+    if (!layout || !Array.isArray(layout.monitors) || layout.monitors.length === 0)
+        return;
+
+    let minX = layout.monitors[0].x;
+    let minY = layout.monitors[0].y;
+    for (const monitor of layout.monitors) {
+        if (monitor.x < minX)
+            minX = monitor.x;
+        if (monitor.y < minY)
+            minY = monitor.y;
+    }
+
+    for (const monitor of layout.monitors) {
+        monitor.x -= minX;
+        monitor.y -= minY;
+    }
+}
+
+function _monitorArea(monitor) {
+    return Math.max(1, monitor.width_px) * Math.max(1, monitor.height_px);
+}
+
+function _smartPortraitLeftCenter(layout) {
+    if (!layout || !Array.isArray(layout.monitors) || layout.monitors.length < 2)
+        return false;
+
+    const monitors = layout.monitors;
+    let portraitIndex = 0;
+    let bestPortraitRatio = -1;
+    let mainIndex = 0;
+    let bestArea = -1;
+
+    for (let i = 0; i < monitors.length; i++) {
+        const m = monitors[i];
+        const ratio = m.height_px / Math.max(1, m.width_px);
+        if (ratio > bestPortraitRatio) {
+            bestPortraitRatio = ratio;
+            portraitIndex = i;
+        }
+
+        const area = _monitorArea(m);
+        if (area > bestArea) {
+            bestArea = area;
+            mainIndex = i;
+        }
+    }
+
+    if (portraitIndex === mainIndex) {
+        for (let i = 0; i < monitors.length; i++) {
+            if (i !== mainIndex) {
+                portraitIndex = i;
+                break;
+            }
+        }
+    }
+
+    const portrait = monitors[portraitIndex];
+    const main = monitors[mainIndex];
+
+    portrait.x = 0;
+    portrait.y = 0;
+
+    main.x = portrait.width_px;
+    main.y = Math.round((portrait.height_px - main.height_px) / 2);
+
+    let cursorX = main.x + main.width_px;
+    for (let i = 0; i < monitors.length; i++) {
+        if (i === portraitIndex || i === mainIndex)
+            continue;
+
+        const monitor = monitors[i];
+        monitor.x = cursorX;
+        monitor.y = Math.round((main.height_px - monitor.height_px) / 2) + main.y;
+        cursorX += monitor.width_px;
+    }
+
+    _normalizeToOrigin(layout);
+    return true;
+}
+
+function _alignSideBySide(layout) {
+    if (!layout || !Array.isArray(layout.monitors) || layout.monitors.length === 0)
+        return;
+
+    layout.monitors.sort((a, b) => a.x - b.x || a.y - b.y);
+    let cursorX = 0;
+    for (const monitor of layout.monitors) {
+        monitor.x = cursorX;
+        monitor.y = 0;
+        cursorX += monitor.width_px;
+    }
+}
+
+function _centerSecondaryVertically(layout) {
+    if (!layout || !Array.isArray(layout.monitors) || layout.monitors.length < 2)
+        return;
+
+    let mainIndex = 0;
+    let bestArea = -1;
+    for (let i = 0; i < layout.monitors.length; i++) {
+        const area = _monitorArea(layout.monitors[i]);
+        if (area > bestArea) {
+            bestArea = area;
+            mainIndex = i;
+        }
+    }
+
+    const main = layout.monitors[mainIndex];
+    for (let i = 0; i < layout.monitors.length; i++) {
+        if (i === mainIndex)
+            continue;
+        layout.monitors[i].y = Math.round(main.y + (main.height_px - layout.monitors[i].height_px) / 2);
+    }
+}
+
 export default class DuaScreenPreferences extends ExtensionPreferences {
     fillPreferencesWindow(window) {
         this._settings = this.getSettings();
@@ -244,6 +364,60 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
         editorGroup.add(scrolled);
         page.add(editorGroup);
 
+        const visualGroup = new Adw.PreferencesGroup({
+            title: _('Visual alignment editor'),
+            description: _('Use auto-align buttons for quick placement, then fine-tune X and Y manually per monitor.'),
+        });
+
+        this._previewArea = new Gtk.DrawingArea({
+            content_width: 760,
+            content_height: 280,
+            hexpand: true,
+            vexpand: false,
+        });
+        this._previewArea.set_draw_func((area, cr, width, height) => {
+            this._drawLayoutPreview(cr, width, height);
+        });
+        visualGroup.add(this._previewArea);
+
+        const visualButtons = new Gtk.Box({
+            orientation: Gtk.Orientation.HORIZONTAL,
+            spacing: 8,
+            margin_top: 8,
+            margin_bottom: 8,
+            hexpand: true,
+        });
+
+        const loadFromJSONButton = new Gtk.Button({ label: _('Load JSON into visual editor') });
+        loadFromJSONButton.connect('clicked', () => this._loadVisualFromBuffer());
+        visualButtons.append(loadFromJSONButton);
+
+        const saveToJSONButton = new Gtk.Button({ label: _('Write visual editor to JSON') });
+        saveToJSONButton.connect('clicked', () => this._writeVisualToBuffer());
+        visualButtons.append(saveToJSONButton);
+
+        const smartPortraitButton = new Gtk.Button({ label: _('Auto: portrait left + centered main') });
+        smartPortraitButton.connect('clicked', () => this._applySmartPortraitAlignment());
+        visualButtons.append(smartPortraitButton);
+
+        const sideBySideButton = new Gtk.Button({ label: _('Auto: side by side') });
+        sideBySideButton.connect('clicked', () => this._applySideBySideAlignment());
+        visualButtons.append(sideBySideButton);
+
+        const centerVerticalButton = new Gtk.Button({ label: _('Auto: center secondary vertically') });
+        centerVerticalButton.connect('clicked', () => this._applyVerticalCentering());
+        visualButtons.append(centerVerticalButton);
+
+        visualGroup.add(visualButtons);
+
+        this._monitorControlsBox = new Gtk.Box({
+            orientation: Gtk.Orientation.VERTICAL,
+            spacing: 8,
+            hexpand: true,
+        });
+        visualGroup.add(this._monitorControlsBox);
+        page.add(visualGroup);
+
         const actionGroup = new Adw.PreferencesGroup({
             title: _('Actions'),
         });
@@ -268,6 +442,8 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
         statusGroup.add(this._statusLabel);
         page.add(statusGroup);
 
+        this._loadVisualFromBuffer();
+
         return page;
     }
 
@@ -291,6 +467,7 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
 
     _setLayoutText(text) {
         this._layoutBuffer.set_text(text, -1);
+        this._loadVisualFromBuffer();
         this._status(_('Preset loaded. Save or apply it to the daemon.'));
     }
 
@@ -299,10 +476,185 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
             const inputDevice = this._settings.get_string('input-device').trim();
             const detected = _detectLayoutFromXrandr(inputDevice);
             this._layoutBuffer.set_text(detected, -1);
+            this._loadVisualFromBuffer();
             this._status(_('Detected current monitor layout from xrandr. Save or apply it to the daemon.'));
         } catch (error) {
             this._status(_('Unable to detect layout: ') + error.message);
         }
+    }
+
+    _drawLayoutPreview(cr, width, height) {
+        cr.setSourceRGBA(0.07, 0.08, 0.11, 1.0);
+        cr.paint();
+
+        if (!this._visualLayout || !Array.isArray(this._visualLayout.monitors) || this._visualLayout.monitors.length === 0)
+            return;
+
+        const monitors = this._visualLayout.monitors;
+        let minX = monitors[0].x;
+        let minY = monitors[0].y;
+        let maxX = monitors[0].x + monitors[0].width_px;
+        let maxY = monitors[0].y + monitors[0].height_px;
+
+        for (const m of monitors) {
+            minX = Math.min(minX, m.x);
+            minY = Math.min(minY, m.y);
+            maxX = Math.max(maxX, m.x + m.width_px);
+            maxY = Math.max(maxY, m.y + m.height_px);
+        }
+
+        const layoutWidth = Math.max(1, maxX - minX);
+        const layoutHeight = Math.max(1, maxY - minY);
+        const padding = 20;
+        const scale = Math.min((width - padding * 2) / layoutWidth, (height - padding * 2) / layoutHeight);
+
+        cr.selectFontFace('Sans', 0, 0);
+        cr.setFontSize(11);
+
+        for (let i = 0; i < monitors.length; i++) {
+            const m = monitors[i];
+            const x = padding + (m.x - minX) * scale;
+            const y = padding + (m.y - minY) * scale;
+            const w = Math.max(18, m.width_px * scale);
+            const h = Math.max(18, m.height_px * scale);
+
+            const hue = (i * 0.23) % 1.0;
+            const r = 0.35 + (0.45 * hue);
+            const g = 0.35 + (0.45 * (1.0 - hue));
+            const b = 0.75;
+
+            cr.setSourceRGBA(r, g, b, 0.65);
+            cr.rectangle(x, y, w, h);
+            cr.fillPreserve();
+
+            cr.setSourceRGBA(1, 1, 1, 0.95);
+            cr.setLineWidth(1.5);
+            cr.stroke();
+
+            cr.moveTo(x + 6, y + 16);
+            cr.showText(`${m.name} (${m.x}, ${m.y})`);
+        }
+    }
+
+    _loadVisualFromBuffer() {
+        try {
+            const parsed = JSON.parse(this._getLayoutText());
+            if (!parsed || !Array.isArray(parsed.monitors) || parsed.monitors.length === 0)
+                throw new Error('layout must include at least one monitor');
+
+            this._visualLayout = _cloneLayout(parsed);
+            this._rebuildMonitorControls();
+            this._previewArea.queue_draw();
+        } catch (error) {
+            this._status(_('Cannot load visual editor from JSON: ') + error.message);
+        }
+    }
+
+    _writeVisualToBuffer() {
+        if (!this._visualLayout)
+            return;
+
+        const normalized = this._normalizeLayoutPayload(JSON.stringify(this._visualLayout));
+        this._layoutBuffer.set_text(normalized, -1);
+        this._previewArea.queue_draw();
+        this._status(_('Visual editor changes written to JSON.'));
+    }
+
+    _rebuildMonitorControls() {
+        if (!this._monitorControlsBox)
+            return;
+
+        let child = this._monitorControlsBox.get_first_child();
+        while (child) {
+            const next = child.get_next_sibling();
+            this._monitorControlsBox.remove(child);
+            child = next;
+        }
+
+        if (!this._visualLayout || !Array.isArray(this._visualLayout.monitors))
+            return;
+
+        this._visualLayout.monitors.forEach((monitor, index) => {
+            this._monitorControlsBox.append(this._createMonitorControlRow(monitor, index));
+        });
+    }
+
+    _createMonitorControlRow(monitor, index) {
+        const row = new Gtk.Box({
+            orientation: Gtk.Orientation.HORIZONTAL,
+            spacing: 8,
+            margin_top: 4,
+            margin_bottom: 4,
+            hexpand: true,
+        });
+
+        const nameLabel = new Gtk.Label({
+            label: `${index + 1}. ${monitor.name}`,
+            width_chars: 18,
+            xalign: 0,
+        });
+        row.append(nameLabel);
+
+        const xSpin = Gtk.SpinButton.new_with_range(-20000, 20000, 1);
+        xSpin.set_value(monitor.x);
+        xSpin.connect('value-changed', () => {
+            monitor.x = xSpin.get_value_as_int();
+            this._writeVisualToBuffer();
+        });
+        row.append(new Gtk.Label({ label: _('X'), xalign: 0 }));
+        row.append(xSpin);
+
+        const ySpin = Gtk.SpinButton.new_with_range(-20000, 20000, 1);
+        ySpin.set_value(monitor.y);
+        ySpin.connect('value-changed', () => {
+            monitor.y = ySpin.get_value_as_int();
+            this._writeVisualToBuffer();
+        });
+        row.append(new Gtk.Label({ label: _('Y'), xalign: 0 }));
+        row.append(ySpin);
+
+        const sizeLabel = new Gtk.Label({
+            label: `${monitor.width_px}x${monitor.height_px}`,
+            xalign: 0,
+        });
+        row.append(sizeLabel);
+
+        return row;
+    }
+
+    _applySmartPortraitAlignment() {
+        if (!this._visualLayout)
+            return;
+
+        const changed = _smartPortraitLeftCenter(this._visualLayout);
+        if (!changed) {
+            this._status(_('Need at least two monitors for smart portrait alignment.'));
+            return;
+        }
+
+        this._rebuildMonitorControls();
+        this._writeVisualToBuffer();
+        this._status(_('Applied smart portrait-left + centered-main alignment.'));
+    }
+
+    _applySideBySideAlignment() {
+        if (!this._visualLayout)
+            return;
+
+        _alignSideBySide(this._visualLayout);
+        this._rebuildMonitorControls();
+        this._writeVisualToBuffer();
+        this._status(_('Applied side-by-side alignment.'));
+    }
+
+    _applyVerticalCentering() {
+        if (!this._visualLayout)
+            return;
+
+        _centerSecondaryVertically(this._visualLayout);
+        this._rebuildMonitorControls();
+        this._writeVisualToBuffer();
+        this._status(_('Centered secondary monitors vertically around the main screen.'));
     }
 
     _getLayoutText() {
