@@ -238,6 +238,9 @@ func runEventLoop(
 	// operate on it via unsafe byte slice overlays — zero allocations.
 	var ev InputEvent
 
+	// Batching state: REL_X and REL_Y deltas are accumulated until EV_SYN.
+	var batchDX, batchDY int32
+
 	// errCh receives the first error from the read goroutine.
 	errCh := make(chan error, 1)
 
@@ -258,35 +261,46 @@ func runEventLoop(
 			// Branch based on event type.
 			switch ev.Type {
 			case EV_REL:
-				// Relative movement — this is where DPI correction happens.
-				if ev.Code == REL_X || ev.Code == REL_Y {
-					// For diagonal movement, we need both X and Y to transform
-					// together. However, evdev sends them as separate events
-					// within the same SYN_REPORT group. For simplicity and
-					// correctness at the single-axis level:
-					if ev.Code == REL_X {
-						correctedDX, _ := transform.Transform(ev.Value, 0)
-						ev.Value = correctedDX
-					} else {
-						_, correctedDY := transform.Transform(0, ev.Value)
-						ev.Value = correctedDY
+				if ev.Code == REL_X {
+					batchDX += ev.Value
+				} else if ev.Code == REL_Y {
+					batchDY += ev.Value
+				} else {
+					// Scroll events (REL_WHEEL, etc.) pass through immediately.
+					if err := writer.InjectEvent(&ev); err != nil {
+						errCh <- err
+						return
 					}
 				}
-				// Scroll events (REL_WHEEL, REL_HWHEEL) pass through unchanged.
-				if err := writer.InjectEvent(&ev); err != nil {
-					errCh <- err
-					return
-				}
 
-			case EV_KEY, EV_SYN, EV_MSC:
-				// Buttons, sync markers, and misc events: pass through unchanged.
-				if err := writer.InjectEvent(&ev); err != nil {
-					errCh <- err
-					return
+			case EV_SYN:
+				if ev.Code == 0 { // SYN_REPORT
+					// Apply transformation to the accumulated batch.
+					if batchDX != 0 || batchDY != 0 {
+						correctedDX, correctedDY := transform.Transform(batchDX, batchDY)
+						if err := writer.InjectRelativeMove(correctedDX, correctedDY); err != nil {
+							errCh <- err
+							return
+						}
+						batchDX = 0
+						batchDY = 0
+					} else {
+						// Pass through SYN_REPORT even if no movement (for buttons etc.)
+						if err := writer.InjectEvent(&ev); err != nil {
+							errCh <- err
+							return
+						}
+					}
+				} else {
+					// Other SYN codes pass through.
+					if err := writer.InjectEvent(&ev); err != nil {
+						errCh <- err
+						return
+					}
 				}
 
 			default:
-				// Unknown event types: pass through for compatibility.
+				// Buttons (EV_KEY), etc. pass through immediately.
 				if err := writer.InjectEvent(&ev); err != nil {
 					errCh <- err
 					return

@@ -47,3 +47,26 @@
     color: #9a9996;
     font-style: italic;
 }
+
+/* ==========================================================================
+ * Measurement Overlay Styles
+ * ==========================================================================
+ */
+
+/* Base style for the measurement overlay container */
+.measurement-overlay {
+    background-color: rgba(255, 0, 0, 0.5); /* Semi-transparent red for debugging */
+    border: 1px solid rgba(255, 255, 255, 0.8); /* White border */
+    z-index: 1000; /* Ensure it appears above other elements */
+}
+
+/* Style for the measurement labels */
+.measurement-label {
+    color: #ffffff; /* White text */
+    font-size: 12px;
+    font-weight: bold;
+    padding: 2px 4px;
+    background-color: rgba(0, 0, 0, 0.7); /* Dark background for contrast */
+    border-radius: 4px; /* Rounded corners */
+    position: absolute; /* Allow precise positioning */
+}

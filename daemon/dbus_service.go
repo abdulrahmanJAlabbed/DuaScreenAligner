@@ -60,6 +60,10 @@ const introspectXML = `
     <method name="ListDevices">
       <arg name="devices" type="s" direction="out"/>
     </method>
+    <method name="SetCursorPosition">
+      <arg name="x" type="i" direction="in"/>
+      <arg name="y" type="i" direction="in"/>
+    </method>
     <property name="Version" type="s" access="read"/>
     <property name="Enabled" type="b" access="read"/>
     <signal name="StatusChanged">
@@ -274,6 +278,14 @@ func (s *DBusService) ListDevices() (string, *dbus.Error) {
 		return "[]", dbus.NewError(dbusIface+".SerializeError", []interface{}{err.Error()})
 	}
 	return string(data), nil
+}
+
+// SetCursorPosition synchronizes the tracked cursor position.
+//
+// DBus signature: SetCursorPosition(ii)
+func (s *DBusService) SetCursorPosition(x, y int32) *dbus.Error {
+	s.transform.SetCursorPosition(int(x), int(y))
+	return nil
 }
 
 // ============================================================================

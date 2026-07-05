@@ -1,83 +1,108 @@
-// extension.js — GNOME Shell Extension entry point (GNOME 45+ ES Module).
-// Fully simplified to display measurements on screen borders only.
+// extension.js — GNOME Shell extension entry point.
+// Syncs the saved layout settings to the daemon over DBus.
 
-import GObject from 'gi://GObject';
-import St from 'gi://St';
-import Clutter from 'gi://Clutter';
-import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import Gio from 'gi://Gio';
+import GLib from 'gi://GLib';
+import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 
-// ============================================================================
-// Measurement Display
-// ============================================================================
+const DBUS_NAME = 'com.github.duascreenaligner.Daemon';
+const DBUS_PATH = '/com/github/duascreenaligner/Daemon';
+const DBUS_IFACE = 'com.github.duascreenaligner.Daemon';
 
-const MeasurementOverlay = GObject.registerClass(
-class MeasurementOverlay extends St.Widget {
-    _init() {
-        super._init({
-            style_class: 'measurement-overlay',
-            reactive: false,
-        });
+function _callDaemon(method, inSignature, outSignature, args) {
+    const connection = Gio.bus_get_sync(Gio.BusType.SYSTEM, null);
+    const parameters = new GLib.Variant(`(${inSignature})`, args);
+    const replyType = outSignature ? new GLib.VariantType(`(${outSignature})`) : null;
 
-        this._createMeasurements();
-    }
+    return connection.call_sync(
+        DBUS_NAME,
+        DBUS_PATH,
+        DBUS_IFACE,
+        method,
+        parameters,
+        replyType,
+        Gio.DBusCallFlags.NONE,
+        -1,
+        null
+    );
+}
 
-    _createMeasurements() {
-        const monitors = Main.layoutManager.monitors;
+function _deepUnpackBoolean(result) {
+    if (!result)
+        return false;
 
-        monitors.forEach((monitor) => {
-            // Create a container for each monitor's measurements.
-            const container = new St.Widget({
-                layout_manager: new Clutter.BoxLayout(),
-                x: monitor.x,
-                y: monitor.y,
-                width: monitor.width,
-                height: monitor.height,
-                reactive: false,
-            });
+    const unpacked = result.deepUnpack();
+    return Array.isArray(unpacked) ? Boolean(unpacked[0]) : Boolean(unpacked);
+}
 
-            // Add top measurement.
-            const topLabel = new St.Label({
-                text: `${monitor.width}px`,
-                style_class: 'measurement-label',
-            });
-            container.add_child(topLabel);
-
-            // Add left measurement.
-            const leftLabel = new St.Label({
-                text: `${monitor.height}px`,
-                style_class: 'measurement-label',
-            });
-            leftLabel.set_position(0, monitor.height / 2);
-            container.add_child(leftLabel);
-
-            this.add_child(container);
-        });
-    }
-});
-
-// ============================================================================
-// Extension Entry Point
-// ============================================================================
-
-export default class DuaScreenAlignerExtension {
+export default class DuaScreenAlignerExtension extends Extension {
     enable() {
-        log('[DuaScreen] Extension enabled');
+        this._settings = this.getSettings();
+        this._syncTimeoutId = 0;
 
-        try {
-            this._overlay = new MeasurementOverlay();
-            Main.layoutManager.addChrome(this._overlay);
-            log('[DuaScreen] MeasurementOverlay successfully added to the screen.');
-        } catch (error) {
-            log(`[DuaScreen] Error initializing MeasurementOverlay: ${error.message}`);
-        }
+        this._changedIds = [
+            this._settings.connect('changed::monitor-layout', () => this._scheduleSync()),
+            this._settings.connect('changed::enabled', () => this._scheduleSync()),
+            this._settings.connect('changed::input-device', () => this._scheduleSync()),
+        ];
+
+        this._scheduleSync();
+        log('[DuaScreen] Extension enabled and layout sync scheduled');
     }
 
     disable() {
+        if (this._syncTimeoutId) {
+            GLib.source_remove(this._syncTimeoutId);
+            this._syncTimeoutId = 0;
+        }
+
+        if (this._settings && this._changedIds) {
+            for (const id of this._changedIds)
+                this._settings.disconnect(id);
+        }
+
+        this._changedIds = [];
+        this._settings = null;
         log('[DuaScreen] Extension disabled');
-        if (this._overlay) {
-            this._overlay.destroy();
-            this._overlay = null;
-            log('[DuaScreen] MeasurementOverlay successfully removed.');
+    }
+
+    _scheduleSync() {
+        if (this._syncTimeoutId)
+            return;
+
+        this._syncTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 150, () => {
+            this._syncTimeoutId = 0;
+            this._syncSettingsToDaemon();
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
+    _syncSettingsToDaemon() {
+        if (!this._settings)
+            return;
+
+        const layoutJSON = this._settings.get_string('monitor-layout');
+        const inputDevice = this._settings.get_string('input-device').trim();
+        const enabled = this._settings.get_boolean('enabled');
+
+        if (layoutJSON && layoutJSON.trim().length > 0) {
+            try {
+                const layout = JSON.parse(layoutJSON);
+                if (inputDevice)
+                    layout.device_path = inputDevice;
+
+                const result = _callDaemon('SetLayout', 's', 'b', [JSON.stringify(layout)]);
+                if (_deepUnpackBoolean(result))
+                    log('[DuaScreen] Layout synced to daemon');
+            } catch (error) {
+                logError(error, '[DuaScreen] Failed to apply layout');
+            }
+        }
+
+        try {
+            _callDaemon('SetEnabled', 'b', 'b', [enabled]);
+        } catch (error) {
+            logError(error, '[DuaScreen] Failed to update enabled state');
         }
     }
 }

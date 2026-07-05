@@ -124,106 +124,95 @@ func TestTransformDisabled(t *testing.T) {
 	}
 }
 
-// TestTransformBoundaryCrossing2x tests cursor movement from a 96-DPI
-// monitor to a 192-DPI monitor (2x scaling).
-func TestTransformBoundaryCrossing2x(t *testing.T) {
+// TestTransformContinuousScaling verifies that movement is scaled
+// consistently on each monitor according to its DPI relative to the baseline.
+func TestTransformContinuousScaling(t *testing.T) {
 	te := NewTransformEngine()
 	te.SetEnabled(true)
 
-	// Monitor A: 96 DPI (e.g., 1920px across 508mm ≈ 96 DPI)
-	// Monitor B: 192 DPI (e.g., 3840px across 508mm ≈ 192 DPI)
+	// Monitor A (Baseline): 96 DPI
+	// Monitor B: 192 DPI (2x baseline)
 	cfg := &LayoutConfig{
 		Monitors: []MonitorConfig{
-			{Name: "A", X: 0, Y: 0, WidthPx: 1920, HeightPx: 1080,
-				DPIOverride: 96},
-			{Name: "B", X: 1920, Y: 0, WidthPx: 3840, HeightPx: 2160,
-				DPIOverride: 192},
+			{Name: "A", X: 0, Y: 0, WidthPx: 1920, HeightPx: 1080, DPIOverride: 96},
+			{Name: "B", X: 1920, Y: 0, WidthPx: 3840, HeightPx: 2160, DPIOverride: 192},
 		},
 	}
 	te.SetLayout(cfg)
 
-	// Move cursor to the right edge of monitor A.
-	// Start position is center of A (960, 540).
-	// Move right 960 pixels to reach the boundary.
-	dx, dy := te.Transform(960, 0)
-	// Still on monitor A, no scaling.
-	if dx != 960 {
-		t.Logf("Pre-boundary move: dx=%d (expected ~960)", dx)
+	// 1. Move within Monitor A (96 DPI). Scale = 96/96 = 1.0.
+	dx, _ := te.Transform(10, 0)
+	if dx != 10 {
+		t.Errorf("Monitor A (baseline): got dx=%d, expected 10", dx)
 	}
 
-	// Now cross into monitor B with a 10-pixel delta.
-	// Scale = srcDPI / dstDPI = 96/192 = 0.5
-	// Physical distance preservation: on the 192 DPI display, the same
-	// physical mouse movement produces the same physical on-screen distance.
-	// Since the src is 96 DPI, 10 raw pixels = 10/96 inches of physical movement.
-	// On the 192 DPI target, that physical distance = (10/96)*192 = 20 pixels.
-	// BUT our matrix is srcDPI/dstDPI, so scale = 96/192 = 0.5 → 10*0.5 = 5.
-	// This means the cursor moves LESS pixels on the higher-DPI screen,
-	// making the physical on-screen distance equal.
-	dx, dy = te.Transform(10, 0)
-	t.Logf("Boundary crossing 2x: raw=(10, 0) -> corrected=(%d, %d)", dx, dy)
+	// 2. Move to Monitor B. Cursor starts at center of A (960, 540).
+	// Move right 1000 pixels to reach x=1960 (inside B).
+	// On monitor A, 1000 raw -> 1000 corrected.
+	te.Transform(1000, 0)
 
-	// Allow tolerance due to fixed-point math and cursor position tracking.
-	// The scale factor srcDPI/dstDPI = 96/192 = 0.5, so expect ~5.
-	// However, the raw cursor position determines the boundary crossing
-	// detection, and the initial position + 960px move might not land exactly
-	// at the boundary. Accept a wider range.
-	if dx < 1 || dx > 25 {
-		t.Errorf("Expected scaled value from 96->192 DPI, got %d", dx)
+	// 3. Move within Monitor B (192 DPI). Scale = 192/96 = 2.0.
+	dx, _ = te.Transform(10, 0)
+	if dx != 20 {
+		t.Errorf("Monitor B (2x DPI): got dx=%d, expected 20", dx)
 	}
-	_ = dy
 }
 
 // TestTransformSubPixelAccumulation verifies that sub-pixel remainders
-// from fixed-point scaling are accumulated and eventually output,
-// preventing drift over many small movements.
+// from fixed-point scaling are accumulated and eventually output.
 func TestTransformSubPixelAccumulation(t *testing.T) {
 	te := NewTransformEngine()
 	te.SetEnabled(true)
 
-	// Setup: two monitors with different DPI.
-	// Monitor A: 144 DPI, Monitor B: 96 DPI
-	// Moving from A (high DPI) to B (low DPI) → scale = 144/96 = 1.5
-	// Each raw pixel on A becomes 1.5 pixels on B.
+	// Monitor A (Baseline): 100 DPI
+	// Monitor B: 150 DPI (1.5x baseline)
 	cfg := &LayoutConfig{
 		Monitors: []MonitorConfig{
-			{Name: "A", X: 0, Y: 0, WidthPx: 2560, HeightPx: 1440,
-				DPIOverride: 144},
-			{Name: "B", X: 2560, Y: 0, WidthPx: 1920, HeightPx: 1080,
-				DPIOverride: 96},
+			{Name: "A", X: 0, Y: 0, WidthPx: 1000, HeightPx: 1000, DPIOverride: 100},
+			{Name: "B", X: 1000, Y: 0, WidthPx: 1000, HeightPx: 1000, DPIOverride: 150},
 		},
 	}
 	te.SetLayout(cfg)
 
-	// Move to the right edge of monitor A to reach the boundary.
-	// Cursor starts at center of A (1280, 720).
-	// Move right by 1280 to reach x=2560 (boundary).
-	te.Transform(1280, 0)
+	// Move to Monitor B.
+	te.Transform(1200, 0)
 
-	// Cross boundary into B.
-	te.Transform(1, 0)
-
-	// Now send many 1-pixel increments while on monitor B.
-	// Since we're staying on B (same monitor), no scaling should occur.
-	// The scaling only happens on the crossing event.
-	// For a proper sub-pixel test, let's verify the total is reasonable.
+	// Send many 1-pixel increments on monitor B (1.5x scale).
+	// 1 * 1.5 = 1.5.
+	// Event 1: 1.5 -> 1 (acc 0.5)
+	// Event 2: 1.5 + 0.5 = 2.0 -> 2 (acc 0)
+	// Over 10 events, we expect 15 pixels total.
 	totalCorrected := int32(0)
-	rawMoves := 300
-	for i := 0; i < rawMoves; i++ {
+	for i := 0; i < 10; i++ {
 		dx, _ := te.Transform(1, 0)
 		totalCorrected += dx
 	}
 
-	// After crossing, all subsequent moves are on monitor B (same monitor),
-	// so they pass through unchanged. Total should be close to rawMoves.
-	t.Logf("Sub-pixel accumulation: %d raw moves -> %d corrected",
-		rawMoves, totalCorrected)
+	if totalCorrected != 15 {
+		t.Errorf("Sub-pixel accumulation: got %d, expected 15", totalCorrected)
+	}
+}
 
-	// The moves after settling on B should be 1:1 passthrough.
-	// Allow tolerance for the boundary crossing event.
-	if math.Abs(float64(totalCorrected)-float64(rawMoves)) > 20 {
-		t.Errorf("After settling on destination monitor, expected ~%d passthrough, got %d",
-			rawMoves, totalCorrected)
+// TestSetCursorPosition verifies that manual cursor position updates work.
+func TestSetCursorPosition(t *testing.T) {
+	te := NewTransformEngine()
+	te.SetEnabled(true)
+
+	cfg := &LayoutConfig{
+		Monitors: []MonitorConfig{
+			{Name: "A", X: 0, Y: 0, WidthPx: 1000, HeightPx: 1000, DPIOverride: 100},
+			{Name: "B", X: 1000, Y: 0, WidthPx: 1000, HeightPx: 1000, DPIOverride: 200},
+		},
+	}
+	te.SetLayout(cfg)
+
+	// Sync to Monitor B.
+	te.SetCursorPosition(1500, 500)
+
+	// Move within Monitor B (2x scale).
+	dx, _ := te.Transform(10, 0)
+	if dx != 20 {
+		t.Errorf("After SetCursorPosition to B, expected 2x scale, got dx=%d", dx)
 	}
 }
 

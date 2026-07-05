@@ -181,40 +181,59 @@ func (w *UinputWriter) InjectEvent(ev *InputEvent) error {
 	return nil
 }
 
-// InjectRelativeMove injects a REL_X + REL_Y + SYN_REPORT sequence.
-// This is a convenience method wrapping three InjectEvent calls for the
-// most common operation: injecting corrected mouse movement.
+// InjectEvents writes multiple input_events to the virtual device in a
+// single syscall. This is the most efficient way to inject a batch of
+// events (e.g., REL_X + REL_Y + SYN_REPORT).
 //
-// ZERO-ALLOCATION: Uses a stack-allocated InputEvent and reuses it
-// across all three writes.
+// ZERO-ALLOCATION HOT PATH:
+// The slice must be contiguous in memory.
+func (w *UinputWriter) InjectEvents(events []InputEvent) error {
+	if len(events) == 0 {
+		return nil
+	}
+	
+	// Create a byte slice header that covers the entire slice of events.
+	size := len(events) * inputEventSize
+	buf := unsafe.Slice((*byte)(unsafe.Pointer(&events[0])), size)
+	
+	_, err := unix.Write(w.fd, buf)
+	if err != nil {
+		return fmt.Errorf("uinput batch write error: %w", err)
+	}
+	return nil
+}
+
+// InjectRelativeMove injects a REL_X + REL_Y + SYN_REPORT sequence.
+//
+// ZERO-ALLOCATION: Uses a stack-allocated array of 3 events and a single
+// syscall via InjectEvents.
 func (w *UinputWriter) InjectRelativeMove(dx, dy int32) error {
-	var ev InputEvent
+	var batch [3]InputEvent
+	count := 0
 
 	// X axis delta
 	if dx != 0 {
-		ev.Type = EV_REL
-		ev.Code = REL_X
-		ev.Value = dx
-		if err := w.InjectEvent(&ev); err != nil {
-			return err
-		}
+		batch[count].Type = EV_REL
+		batch[count].Code = REL_X
+		batch[count].Value = dx
+		count++
 	}
 
 	// Y axis delta
 	if dy != 0 {
-		ev.Type = EV_REL
-		ev.Code = REL_Y
-		ev.Value = dy
-		if err := w.InjectEvent(&ev); err != nil {
-			return err
-		}
+		batch[count].Type = EV_REL
+		batch[count].Code = REL_Y
+		batch[count].Value = dy
+		count++
 	}
 
-	// SYN_REPORT marks the end of this logical event group.
-	ev.Type = EV_SYN
-	ev.Code = 0
-	ev.Value = 0
-	return w.InjectEvent(&ev)
+	// SYN_REPORT
+	batch[count].Type = EV_SYN
+	batch[count].Code = 0
+	batch[count].Value = 0
+	count++
+
+	return w.InjectEvents(batch[:count])
 }
 
 // InjectSynReport writes an EV_SYN/SYN_REPORT event to finalize a batch

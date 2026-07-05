@@ -66,5 +66,23 @@
       </description>
     </key>
 
+    <!-- Label Size: Font size for measurement labels. -->
+    <key name="label-size" type="i">
+      <default>12</default>
+      <summary>Font size for measurement labels</summary>
+      <description>
+        Specifies the font size (in pixels) for the measurement labels displayed on screen borders.
+      </description>
+    </key>
+
+    <!-- Overlay Transparency: Transparency level for the overlay. -->
+    <key name="overlay-transparency" type="i">
+      <default>50</default>
+      <summary>Transparency level for the overlay</summary>
+      <description>
+        Specifies the transparency level (0-100) for the measurement overlay. 0 is fully transparent, 100 is fully opaque.
+      </description>
+    </key>
+
   </schema>
 </schemalist>

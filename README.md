@@ -1,23 +1,19 @@
 # DuaScreen Aligner
 
-**Multi-monitor DPI cursor correction for Linux.** Fixes the jarring cursor speed change when moving between monitors with different pixel densities (e.g., a 4K laptop display next to a 1080p external monitor).
+**Multi-monitor DPI cursor correction for Linux.** Fixes the jarring cursor speed change when moving between monitors with different pixel densities and lets you describe layouts for arbitrary monitor arrangements, including a portrait screen on the left and a main screen centered beside it.
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                    GNOME Shell Extension                 │
-│  ┌──────────────┐  ┌─────────────────────────────────┐  │
-│  │ Panel        │  │ Preferences (Libadwaita/GTK4)    │  │
-│  │ Indicator    │  │  ┌───────────────────────────┐   │  │
-│  │ (extension.js│  │  │ Monitor Topology Map      │   │  │
-│  │  status icon)│  │  │ (drag & drop alignment)   │   │  │
-│  └──────┬───────┘  │  └───────────────────────────┘   │  │
-│         │          │  DPI overrides • Device select    │  │
-│         │          └──────────────┬────────────────────┘  │
-└─────────┼───────────────────────┼────────────────────────┘
-          │    DBus (async)        │    DBus (SetLayout)
-          ▼                        ▼
+│  ┌─────────────────────────────────────────────────────┐  │
+│  │ Preferences (Libadwaita/GTK4)                      │  │
+│  │  Layout JSON editor • Presets • Apply to daemon    │  │
+│  └─────────────────────────────────────────────────────┘  │
+└───────────────┬──────────────────────────────────────────┘
+                │ DBus (SetLayout / SetEnabled)
+                ▼
 ┌─────────────────────────────────────────────────────────┐
 │                     Go Daemon (root)                     │
 │                                                          │
@@ -71,7 +67,7 @@ gnome-extensions enable dua-screen-aligner@duascreenaligner.github.com
 
 ### Configure
 
-Open GNOME Extensions → DuaScreen Aligner → Preferences, or:
+Open GNOME Extensions → DuaScreen Aligner → Preferences, then use Detect current monitors (xrandr), load a preset, or paste your own JSON layout. The extension stores the layout in GSettings and pushes it to the daemon over DBus.
 
 ```bash
 gnome-extensions prefs dua-screen-aligner@duascreenaligner.github.com

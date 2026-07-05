@@ -72,13 +72,9 @@ type transformLayout struct {
 	// monitors is the list of monitors in the layout.
 	monitors []MonitorConfig
 
-	// dpiFixed stores each monitor's DPI in fixed-point for fast scaling.
-	dpiFixed []int64
-
-	// scaleMatrix[i][j] is the pre-computed fixed-point scaling factor
-	// for cursor movement transitioning from monitor i to monitor j.
-	// scaleMatrix[i][j] = (dpi_i / dpi_j) in fixed-point.
-	scaleMatrix [][]int64
+	// scaleFactors stores each monitor's scaling factor relative to the baseline.
+	// scaleFactor[i] = monitor[i].DPI / baselineDPI
+	scaleFactors []int64
 
 	// totalBounds defines the bounding rectangle of the entire desktop.
 	totalMinX, totalMinY, totalMaxX, totalMaxY int
@@ -102,7 +98,7 @@ func (te *TransformEngine) IsEnabled() bool {
 }
 
 // SetLayout atomically installs a new monitor layout. Pre-computes the
-// DPI scaling matrix so the hot path never does division.
+// DPI scaling factors so the hot path never does division.
 // Safe to call from any goroutine (DBus handler).
 func (te *TransformEngine) SetLayout(cfg *LayoutConfig) {
 	if cfg == nil || len(cfg.Monitors) == 0 {
@@ -112,31 +108,29 @@ func (te *TransformEngine) SetLayout(cfg *LayoutConfig) {
 
 	n := len(cfg.Monitors)
 	layout := &transformLayout{
-		monitors:    make([]MonitorConfig, n),
-		dpiFixed:    make([]int64, n),
-		scaleMatrix: make([][]int64, n),
+		monitors:     make([]MonitorConfig, n),
+		scaleFactors: make([]int64, n),
 	}
 
-	// Copy monitors and compute fixed-point DPI values.
+	// Copy monitors.
 	copy(layout.monitors, cfg.Monitors)
+
+	// Use the first monitor's DPI as the baseline (1.0).
+	// All other monitors will scale relative to this.
+	baselineDPI := layout.monitors[0].DPI()
+	if baselineDPI == 0 {
+		baselineDPI = 96.0
+	}
+	baselineFixed := int64(baselineDPI * float64(fixedOne))
+
+	// Pre-compute scaling factors for each monitor.
+	// scaleFactor = CurrentMonitorDPI / BaselineDPI
 	for i := range layout.monitors {
 		dpi := layout.monitors[i].DPI()
-		layout.dpiFixed[i] = int64(dpi * float64(fixedOne))
-	}
-
-	// Pre-compute the NxN scaling matrix.
-	// scaleMatrix[src][dst] = srcDPI / dstDPI (in fixed-point).
-	// When cursor moves from monitor src to dst, multiply delta by this factor.
-	for i := 0; i < n; i++ {
-		layout.scaleMatrix[i] = make([]int64, n)
-		for j := 0; j < n; j++ {
-			if layout.dpiFixed[j] == 0 {
-				layout.scaleMatrix[i][j] = fixedOne // Avoid division by zero
-			} else {
-				// Fixed-point division: (srcDPI << fixedShift) / dstDPI
-				layout.scaleMatrix[i][j] = (layout.dpiFixed[i] << fixedShift) / layout.dpiFixed[j]
-			}
-		}
+		dpiFixed := int64(dpi * float64(fixedOne))
+		
+		// Fixed-point division: (dpiFixed << fixedShift) / baselineFixed
+		layout.scaleFactors[i] = (dpiFixed << fixedShift) / baselineFixed
 	}
 
 	// Compute total desktop bounds for cursor clamping.
@@ -171,6 +165,26 @@ func (te *TransformEngine) SetLayout(cfg *LayoutConfig) {
 	te.accumY = 0
 }
 
+// SetCursorPosition manually updates the tracked logical cursor position.
+// Used by the DBus service to synchronize with the desktop environment's
+// actual cursor position, preventing drift.
+func (te *TransformEngine) SetCursorPosition(x, y int) {
+	layout := te.layout.Load()
+	if layout == nil {
+		te.cursorX = x
+		te.cursorY = y
+		return
+	}
+
+	te.cursorX = clamp(x, layout.totalMinX, layout.totalMaxX-1)
+	te.cursorY = clamp(y, layout.totalMinY, layout.totalMaxY-1)
+	
+	te.currentMonitor = te.findMonitor(layout, te.cursorX, te.cursorY)
+	if te.currentMonitor < 0 {
+		te.currentMonitor = 0
+	}
+}
+
 // Transform applies DPI-aware scaling to a raw mouse movement delta.
 //
 // ZERO-ALLOCATION HOT PATH:
@@ -189,61 +203,46 @@ func (te *TransformEngine) Transform(rawDX, rawDY int32) (int32, int32) {
 	}
 
 	layout := te.layout.Load()
-	if layout == nil || len(layout.monitors) <= 1 {
-		return rawDX, rawDY // Single monitor or no layout — no scaling needed.
+	if layout == nil {
+		return rawDX, rawDY
 	}
 
-	// Tentative new position before scaling.
-	newX := te.cursorX + int(rawDX)
-	newY := te.cursorY + int(rawDY)
-
-	// Determine which monitor the cursor is moving TO.
-	destMonitor := te.findMonitor(layout, newX, newY)
-	if destMonitor < 0 {
-		// Cursor went outside all monitors; clamp to desktop bounds.
-		newX = clamp(newX, layout.totalMinX, layout.totalMaxX-1)
-		newY = clamp(newY, layout.totalMinY, layout.totalMaxY-1)
-		destMonitor = te.findMonitor(layout, newX, newY)
-		if destMonitor < 0 {
-			destMonitor = te.currentMonitor // Last resort: stay on current.
-		}
+	// 1. Identify current monitor.
+	// We use the last known good monitor as the starting point for scaling.
+	// In continuous scaling, we scale by the DPI of where we are NOW.
+	monitorIdx := te.currentMonitor
+	if monitorIdx < 0 || monitorIdx >= len(layout.monitors) {
+		monitorIdx = 0
 	}
 
-	srcMonitor := te.currentMonitor
+	// 2. Apply scaling factor for the current monitor.
+	scale := layout.scaleFactors[monitorIdx]
+	
+	// Apply fixed-point scaling with accumulator for sub-pixel precision.
+	scaledX := int64(rawDX)*scale + te.accumX
+	scaledY := int64(rawDY)*scale + te.accumY
 
-	// If we're crossing a DPI boundary, apply scaling.
-	var correctedDX, correctedDY int32
-	if srcMonitor != destMonitor && srcMonitor < len(layout.scaleMatrix) && destMonitor < len(layout.scaleMatrix[srcMonitor]) {
-		scale := layout.scaleMatrix[srcMonitor][destMonitor]
+	// Extract integer part.
+	correctedDX := int32(scaledX >> fixedShift)
+	correctedDY := int32(scaledY >> fixedShift)
 
-		// Apply fixed-point scaling with accumulator for sub-pixel precision.
-		// scaledDelta = rawDelta * scale + accumulated_remainder
-		scaledX := int64(rawDX)*scale + te.accumX
-		scaledY := int64(rawDY)*scale + te.accumY
+	// Store fractional remainder.
+	te.accumX = scaledX - (int64(correctedDX) << fixedShift)
+	te.accumY = scaledY - (int64(correctedDY) << fixedShift)
 
-		// Extract integer part (arithmetic right shift preserves sign).
-		correctedDX = int32(scaledX >> fixedShift)
-		correctedDY = int32(scaledY >> fixedShift)
-
-		// Store fractional remainder for next event (prevents drift).
-		te.accumX = scaledX - (int64(correctedDX) << fixedShift)
-		te.accumY = scaledY - (int64(correctedDY) << fixedShift)
-	} else {
-		// Same monitor — pass through unchanged.
-		correctedDX = rawDX
-		correctedDY = rawDY
-	}
-
-	// Update tracked cursor position with corrected values.
+	// 3. Update internal logical position to detect boundary crossings.
+	// We update with CORRECTED deltas because that's what the OS sees.
 	te.cursorX += int(correctedDX)
 	te.cursorY += int(correctedDY)
 
-	// Clamp to desktop bounds.
+	// 4. Clamp to desktop bounds and update monitor cache.
 	te.cursorX = clamp(te.cursorX, layout.totalMinX, layout.totalMaxX-1)
 	te.cursorY = clamp(te.cursorY, layout.totalMinY, layout.totalMaxY-1)
-
-	// Update current monitor cache.
-	te.currentMonitor = destMonitor
+	
+	te.currentMonitor = te.findMonitor(layout, te.cursorX, te.cursorY)
+	if te.currentMonitor < 0 {
+		te.currentMonitor = monitorIdx // Stay on last known if outside all.
+	}
 
 	return correctedDX, correctedDY
 }

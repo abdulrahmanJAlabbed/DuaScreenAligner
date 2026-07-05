@@ -1,0 +1,739 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DuaScreen Monitor Alignment Visualizer</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Inter', sans-serif;
+    background: #0a0a0f;
+    color: #e0e0e8;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ── Header ── */
+  .header {
+    background: linear-gradient(135deg, #13131a 0%, #1a1a2e 100%);
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+    padding: 20px 32px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .header h1 {
+    font-size: 1.4rem;
+    font-weight: 600;
+    background: linear-gradient(135deg, #6c63ff, #3b82f6);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .header .subtitle {
+    font-size: 0.8rem;
+    color: #666;
+    margin-top: 2px;
+  }
+  .header-right {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+  }
+  .status-badge {
+    padding: 6px 14px;
+    border-radius: 20px;
+    font-size: 0.75rem;
+    font-weight: 500;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .status-badge.active {
+    background: rgba(34, 197, 94, 0.15);
+    color: #22c55e;
+    border: 1px solid rgba(34, 197, 94, 0.3);
+  }
+  .status-badge .dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    animation: pulse 2s infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
+  /* ── Main Layout ── */
+  .main {
+    display: grid;
+    grid-template-columns: 1fr 320px;
+    gap: 0;
+    min-height: calc(100vh - 72px);
+  }
+
+  /* ── Canvas Area ── */
+  .canvas-area {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: radial-gradient(ellipse at center, #111118 0%, #0a0a0f 70%);
+    overflow: hidden;
+  }
+  .canvas-area::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background-image:
+      radial-gradient(circle at 1px 1px, rgba(255,255,255,0.03) 1px, transparent 0);
+    background-size: 40px 40px;
+  }
+  .canvas-container {
+    position: relative;
+    z-index: 1;
+  }
+
+  /* ── Monitor Boxes ── */
+  .monitor {
+    position: absolute;
+    border: 2px solid;
+    border-radius: 6px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    transition: box-shadow 0.3s, border-color 0.3s;
+    cursor: default;
+    overflow: hidden;
+  }
+  .monitor::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    opacity: 0.08;
+    border-radius: 4px;
+  }
+  .monitor-1 {
+    border-color: #3b82f6;
+    background: rgba(59, 130, 246, 0.06);
+  }
+  .monitor-1::before { background: linear-gradient(135deg, #3b82f6, #1d4ed8); }
+  .monitor-1:hover { box-shadow: 0 0 30px rgba(59, 130, 246, 0.2); }
+
+  .monitor-2 {
+    border-color: #8b5cf6;
+    background: rgba(139, 92, 246, 0.06);
+  }
+  .monitor-2::before { background: linear-gradient(135deg, #8b5cf6, #6d28d9); }
+  .monitor-2:hover { box-shadow: 0 0 30px rgba(139, 92, 246, 0.2); }
+
+  .monitor-label {
+    position: relative;
+    z-index: 1;
+    text-align: center;
+    pointer-events: none;
+  }
+  .monitor-name {
+    font-size: 0.85rem;
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .monitor-res {
+    font-size: 0.7rem;
+    opacity: 0.6;
+  }
+  .monitor-dpi {
+    font-size: 0.75rem;
+    font-weight: 500;
+    margin-top: 6px;
+    padding: 3px 10px;
+    border-radius: 12px;
+    background: rgba(255,255,255,0.08);
+  }
+  .monitor-size-label {
+    font-size: 0.65rem;
+    opacity: 0.5;
+    margin-top: 4px;
+  }
+
+  /* ── Dimension Lines ── */
+  .dim-line {
+    position: absolute;
+    z-index: 2;
+  }
+  .dim-line-h {
+    height: 1px;
+    background: repeating-linear-gradient(90deg, rgba(255,255,255,0.3) 0, rgba(255,255,255,0.3) 4px, transparent 4px, transparent 8px);
+  }
+  .dim-line-v {
+    width: 1px;
+    background: repeating-linear-gradient(0deg, rgba(255,255,255,0.3) 0, rgba(255,255,255,0.3) 4px, transparent 4px, transparent 8px);
+  }
+  .dim-label {
+    position: absolute;
+    font-size: 0.6rem;
+    color: rgba(255,255,255,0.5);
+    background: #0a0a0f;
+    padding: 1px 6px;
+    border-radius: 3px;
+    white-space: nowrap;
+    z-index: 3;
+  }
+
+  /* ── Boundary Line ── */
+  .boundary-line {
+    position: absolute;
+    z-index: 5;
+    background: linear-gradient(180deg, rgba(239, 68, 68, 0) 0%, rgba(239, 68, 68, 0.8) 30%, rgba(239, 68, 68, 0.8) 70%, rgba(239, 68, 68, 0) 100%);
+    width: 2px;
+  }
+  .boundary-label {
+    position: absolute;
+    z-index: 6;
+    font-size: 0.6rem;
+    color: #ef4444;
+    background: rgba(239, 68, 68, 0.1);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    padding: 2px 8px;
+    border-radius: 4px;
+    white-space: nowrap;
+  }
+
+  /* ── Cursor Mapping Visualization ── */
+  .cursor-line {
+    position: absolute;
+    z-index: 4;
+    pointer-events: none;
+  }
+  .cursor-dot {
+    position: absolute;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    z-index: 7;
+    pointer-events: none;
+    transition: all 0.15s ease;
+  }
+  .cursor-dot-src {
+    background: #22c55e;
+    box-shadow: 0 0 10px rgba(34, 197, 94, 0.5);
+  }
+  .cursor-dot-dst {
+    background: #f59e0b;
+    box-shadow: 0 0 10px rgba(245, 158, 11, 0.5);
+  }
+  .cursor-mapping-line {
+    position: absolute;
+    z-index: 6;
+    pointer-events: none;
+    height: 1px;
+    background: linear-gradient(90deg, #22c55e, #f59e0b);
+    opacity: 0.5;
+    transform-origin: left center;
+  }
+
+  /* ── Sidebar ── */
+  .sidebar {
+    background: linear-gradient(180deg, #13131a 0%, #0f0f16 100%);
+    border-left: 1px solid rgba(255,255,255,0.06);
+    padding: 24px;
+    overflow-y: auto;
+  }
+  .sidebar h2 {
+    font-size: 0.8rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #888;
+    margin-bottom: 16px;
+  }
+
+  .card {
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 12px;
+    padding: 16px;
+    margin-bottom: 16px;
+  }
+  .card-title {
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: #888;
+    margin-bottom: 10px;
+  }
+
+  .info-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 0;
+    font-size: 0.8rem;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+  }
+  .info-row:last-child { border-bottom: none; }
+  .info-row .label { color: #888; }
+  .info-row .value { font-weight: 500; font-variant-numeric: tabular-nums; }
+
+  .scale-factor {
+    text-align: center;
+    padding: 16px;
+    margin-top: 8px;
+  }
+  .scale-factor .big {
+    font-size: 2rem;
+    font-weight: 700;
+    background: linear-gradient(135deg, #f59e0b, #ef4444);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .scale-factor .desc {
+    font-size: 0.7rem;
+    color: #666;
+    margin-top: 4px;
+  }
+
+  .legend {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 8px;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.75rem;
+    color: #aaa;
+  }
+  .legend-dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  /* ── Scale selector ── */
+  .scale-selector {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 20px;
+  }
+  .scale-btn {
+    flex: 1;
+    padding: 8px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 8px;
+    color: #aaa;
+    font-size: 0.7rem;
+    cursor: pointer;
+    text-align: center;
+    transition: all 0.2s;
+    font-family: inherit;
+  }
+  .scale-btn:hover { background: rgba(255,255,255,0.08); }
+  .scale-btn.active {
+    background: rgba(99, 102, 241, 0.15);
+    border-color: rgba(99, 102, 241, 0.4);
+    color: #818cf8;
+  }
+
+  /* ── Hover info tooltip ── */
+  .hover-info {
+    position: absolute;
+    z-index: 10;
+    background: rgba(15, 15, 22, 0.95);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 0.7rem;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.15s;
+    backdrop-filter: blur(10px);
+    min-width: 180px;
+    line-height: 1.6;
+  }
+  .hover-info.visible { opacity: 1; }
+</style>
+</head>
+<body>
+<div class="header">
+  <div>
+    <h1>DuaScreen Monitor Alignment</h1>
+    <div class="subtitle">Physical-scale visualization • Hover boundary to see cursor mapping</div>
+  </div>
+  <div class="header-right">
+    <div class="status-badge active">
+      <span class="dot"></span>
+      DPI Correction Active
+    </div>
+  </div>
+</div>
+
+<div class="main">
+  <div class="canvas-area" id="canvasArea">
+    <div class="canvas-container" id="canvasContainer"></div>
+    <div class="hover-info" id="hoverInfo"></div>
+  </div>
+
+  <div class="sidebar">
+    <h2>View Scale</h2>
+    <div class="scale-selector">
+      <button class="scale-btn" data-scale="physical" onclick="setScale('physical')">Physical</button>
+      <button class="scale-btn active" data-scale="pixel" onclick="setScale('pixel')">Pixel</button>
+      <button class="scale-btn" data-scale="fit" onclick="setScale('fit')">Fit</button>
+    </div>
+
+    <h2>Monitor Details</h2>
+    <div class="card" id="card-mon1"></div>
+    <div class="card" id="card-mon2"></div>
+
+    <h2>DPI Scaling</h2>
+    <div class="card">
+      <div class="scale-factor">
+        <div class="big" id="scaleFactor">—</div>
+        <div class="desc">Correction factor at boundary<br>(cursor speed multiplier)</div>
+      </div>
+      <div id="scaleDetails"></div>
+    </div>
+
+    <h2>Legend</h2>
+    <div class="card">
+      <div class="legend">
+        <div class="legend-item"><div class="legend-dot" style="background:#3b82f6"></div> BenQ 24" (Primary, Landscape)</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#8b5cf6"></div> Dell 27" (Portrait)</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#ef4444"></div> DPI Boundary</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#22c55e"></div> Cursor source position</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#f59e0b"></div> Corrected landing position</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ========================================================================
+// Monitor Configuration (from your xrandr data)
+// ========================================================================
+const monitors = [
+  {
+    name: 'DP-0',
+    brand: 'BenQ 24"',
+    x: 1080, y: 585,
+    widthPx: 1920, heightPx: 1080,
+    widthMM: 531, heightMM: 298,
+    color: '#3b82f6',
+    cssClass: 'monitor-1',
+    primary: true,
+    rotation: 'normal',
+  },
+  {
+    name: 'HDMI-0',
+    brand: 'Dell 27"',
+    x: 0, y: 0,
+    widthPx: 1080, heightPx: 1920,
+    widthMM: 336, heightMM: 598,
+    color: '#8b5cf6',
+    cssClass: 'monitor-2',
+    primary: false,
+    rotation: 'left',
+  },
+];
+
+// Compute DPI for each
+monitors.forEach(m => {
+  m.dpiH = m.widthPx / (m.widthMM / 25.4);
+  m.dpiV = m.heightPx / (m.heightMM / 25.4);
+  m.dpi = m.dpiH; // Use horizontal DPI
+  m.diagInches = Math.sqrt(m.widthMM * m.widthMM + m.heightMM * m.heightMM) / 25.4;
+});
+
+// ========================================================================
+// Rendering
+// ========================================================================
+let currentScale = 'pixel';
+const container = document.getElementById('canvasContainer');
+const canvasArea = document.getElementById('canvasArea');
+const hoverInfo = document.getElementById('hoverInfo');
+
+function setScale(mode) {
+  currentScale = mode;
+  document.querySelectorAll('.scale-btn').forEach(b => b.classList.toggle('active', b.dataset.scale === mode));
+  render();
+}
+
+function getScaleFactor() {
+  const areaRect = canvasArea.getBoundingClientRect();
+  const padding = 80;
+  const availW = areaRect.width - padding * 2;
+  const availH = areaRect.height - padding * 2;
+
+  // Total pixel extent
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  monitors.forEach(m => {
+    minX = Math.min(minX, m.x);
+    minY = Math.min(minY, m.y);
+    maxX = Math.max(maxX, m.x + m.widthPx);
+    maxY = Math.max(maxY, m.y + m.heightPx);
+  });
+  const totalW = maxX - minX;
+  const totalH = maxY - minY;
+
+  if (currentScale === 'pixel') {
+    const s = Math.min(availW / totalW, availH / totalH, 0.35);
+    return { s, offsetX: minX, offsetY: minY, totalW, totalH, label: '1px = 1 screen px' };
+  }
+
+  if (currentScale === 'physical') {
+    // Physical: use mm as base unit
+    let minXmm = Infinity, minYmm = Infinity, maxXmm = -Infinity, maxYmm = -Infinity;
+    monitors.forEach(m => {
+      const xmm = m.x / m.dpiH * 25.4;
+      const ymm = m.y / m.dpiV * 25.4;
+      const wmm = m.widthMM;
+      const hmm = m.heightMM;
+      minXmm = Math.min(minXmm, xmm);
+      minYmm = Math.min(minYmm, ymm);
+      maxXmm = Math.max(maxXmm, xmm + wmm);
+      maxYmm = Math.max(maxYmm, ymm + hmm);
+    });
+    const tw = maxXmm - minXmm;
+    const th = maxYmm - minYmm;
+    const s = Math.min(availW / tw, availH / th, 1.2);
+    return { s, mode: 'physical', minXmm, minYmm, tw, th, label: '1mm = 1 screen unit' };
+  }
+
+  // Fit
+  const s = Math.min(availW / totalW, availH / totalH);
+  return { s, offsetX: minX, offsetY: minY, totalW, totalH, label: 'fit to view' };
+}
+
+function render() {
+  container.innerHTML = '';
+  const sf = getScaleFactor();
+
+  monitors.forEach((m, idx) => {
+    let left, top, width, height;
+
+    if (sf.mode === 'physical') {
+      const xmm = m.x / m.dpiH * 25.4;
+      const ymm = m.y / m.dpiV * 25.4;
+      left = (xmm - sf.minXmm) * sf.s;
+      top = (ymm - sf.minYmm) * sf.s;
+      width = m.widthMM * sf.s;
+      height = m.heightMM * sf.s;
+    } else {
+      left = (m.x - sf.offsetX) * sf.s;
+      top = (m.y - sf.offsetY) * sf.s;
+      width = m.widthPx * sf.s;
+      height = m.heightPx * sf.s;
+    }
+
+    // Monitor box
+    const div = document.createElement('div');
+    div.className = `monitor ${m.cssClass}`;
+    div.style.cssText = `left:${left}px; top:${top}px; width:${width}px; height:${height}px;`;
+    div.innerHTML = `
+      <div class="monitor-label">
+        <div class="monitor-name">${m.brand}</div>
+        <div class="monitor-res">${m.widthPx}×${m.heightPx} ${m.rotation !== 'normal' ? '(' + m.rotation + ')' : ''}</div>
+        <div class="monitor-dpi">${m.dpi.toFixed(1)} DPI</div>
+        <div class="monitor-size-label">${m.widthMM}mm × ${m.heightMM}mm</div>
+        ${m.primary ? '<div class="monitor-size-label" style="color:#3b82f6">★ Primary</div>' : ''}
+      </div>
+    `;
+    container.appendChild(div);
+
+    // Dimension lines
+    // Top horizontal
+    addDimLine(container, left, top - 18, width, 'h', `${m.widthPx}px / ${m.widthMM}mm`);
+    // Left vertical
+    addDimLine(container, left - 18, top, height, 'v', `${m.heightPx}px / ${m.heightMM}mm`);
+  });
+
+  // Draw boundary between monitors
+  drawBoundary(sf);
+
+  // Update sidebar
+  updateSidebar();
+
+  // Center the container
+  const bbox = container.getBoundingClientRect();
+  // Just let CSS center it
+}
+
+function addDimLine(parent, x, y, length, dir, text) {
+  const line = document.createElement('div');
+  line.className = `dim-line dim-line-${dir}`;
+  if (dir === 'h') {
+    line.style.cssText = `left:${x}px; top:${y}px; width:${length}px;`;
+  } else {
+    line.style.cssText = `left:${x}px; top:${y}px; height:${length}px;`;
+  }
+  parent.appendChild(line);
+
+  const label = document.createElement('div');
+  label.className = 'dim-label';
+  label.textContent = text;
+  if (dir === 'h') {
+    label.style.cssText = `left:${x + length/2 - 40}px; top:${y - 10}px;`;
+  } else {
+    label.style.cssText = `left:${x - 60}px; top:${y + length/2 - 8}px;`;
+  }
+  parent.appendChild(label);
+}
+
+function drawBoundary(sf) {
+  // Find the shared edge between monitors
+  const m1 = monitors[0]; // BenQ (right)
+  const m2 = monitors[1]; // Dell (left)
+
+  // The boundary is at x=1080 (where Dell ends and BenQ starts)
+  let bx, by, bh;
+  if (sf.mode === 'physical') {
+    bx = (m1.x / m1.dpiH * 25.4 - sf.minXmm) * sf.s;
+    const overlapTop = Math.max(m1.y / m1.dpiV * 25.4, m2.y / m2.dpiV * 25.4);
+    const overlapBot = Math.min(
+      (m1.y + m1.heightPx) / m1.dpiV * 25.4,
+      (m2.y + m2.heightPx) / m2.dpiV * 25.4
+    );
+    by = (overlapTop - sf.minYmm) * sf.s;
+    bh = (overlapBot - overlapTop) * sf.s;
+  } else {
+    bx = (m1.x - sf.offsetX) * sf.s;
+    const overlapTop = Math.max(m1.y, m2.y);
+    const overlapBot = Math.min(m1.y + m1.heightPx, m2.y + m2.heightPx);
+    by = (overlapTop - sf.offsetY) * sf.s;
+    bh = (overlapBot - overlapTop) * sf.s;
+  }
+
+  if (bh <= 0) return;
+
+  // Boundary line
+  const bl = document.createElement('div');
+  bl.className = 'boundary-line';
+  bl.style.cssText = `left:${bx - 1}px; top:${by}px; height:${bh}px;`;
+  container.appendChild(bl);
+
+  // Boundary label
+  const blbl = document.createElement('div');
+  blbl.className = 'boundary-label';
+  blbl.textContent = `DPI Boundary • ${(monitors[0].dpi / monitors[1].dpi).toFixed(3)}× correction`;
+  blbl.style.cssText = `left:${bx - 80}px; top:${by - 22}px;`;
+  container.appendChild(blbl);
+
+  // Interactive hover area for cursor mapping
+  const hoverZone = document.createElement('div');
+  hoverZone.style.cssText = `
+    position: absolute; left:${bx - 20}px; top:${by}px;
+    width: 40px; height:${bh}px; z-index: 8; cursor: crosshair;
+  `;
+  hoverZone.addEventListener('mousemove', (e) => showCursorMapping(e, sf, bx, by, bh));
+  hoverZone.addEventListener('mouseleave', () => clearCursorMapping());
+  container.appendChild(hoverZone);
+}
+
+// ========================================================================
+// Cursor Mapping Visualization
+// ========================================================================
+let cursorDots = [];
+let mappingLine = null;
+
+function showCursorMapping(e, sf, bx, by, bh) {
+  clearCursorMapping();
+
+  const rect = container.getBoundingClientRect();
+  const mouseY = e.clientY - rect.top;
+
+  // Source dot (on boundary, green)
+  const srcDot = document.createElement('div');
+  srcDot.className = 'cursor-dot cursor-dot-src';
+  srcDot.style.cssText = `left:${bx - 4}px; top:${mouseY - 4}px;`;
+  container.appendChild(srcDot);
+  cursorDots.push(srcDot);
+
+  // Calculate where cursor would land on the other side
+  // Moving from Dell (left) → BenQ (right): scale by Dell.dpi / BenQ.dpi
+  // The Y position maps proportionally
+  const relY = (mouseY - by) / bh; // 0..1
+  const scaleFactor = monitors[1].dpi / monitors[0].dpi;
+  const correctedRelY = relY * scaleFactor + (1 - scaleFactor) * 0.5;
+
+  const dstY = by + correctedRelY * bh;
+  const dstDot = document.createElement('div');
+  dstDot.className = 'cursor-dot cursor-dot-dst';
+  dstDot.style.cssText = `left:${bx - 4 + 30}px; top:${dstY - 4}px;`;
+  container.appendChild(dstDot);
+  cursorDots.push(dstDot);
+
+  // Connecting line
+  const ml = document.createElement('div');
+  ml.className = 'cursor-mapping-line';
+  const dx = 30;
+  const dy = dstY - mouseY;
+  const len = Math.sqrt(dx*dx + dy*dy);
+  const angle = Math.atan2(dy, dx) * 180 / Math.PI;
+  ml.style.cssText = `left:${bx}px; top:${mouseY}px; width:${len}px; transform:rotate(${angle}deg);`;
+  container.appendChild(ml);
+  cursorDots.push(ml);
+
+  // Hover tooltip
+  const hi = document.getElementById('hoverInfo');
+  const srcPxY = Math.round(relY * monitors[1].heightPx + monitors[1].y);
+  const dstPxY = Math.round(correctedRelY * monitors[0].heightPx + monitors[0].y);
+  hi.innerHTML = `
+    <strong style="color:#22c55e">●</strong> Source: Y=${srcPxY}px (Dell ${monitors[1].dpi.toFixed(1)} DPI)<br>
+    <strong style="color:#f59e0b">●</strong> Landing: Y=${dstPxY}px (BenQ ${monitors[0].dpi.toFixed(1)} DPI)<br>
+    <span style="color:#888">Scale: ×${scaleFactor.toFixed(4)}</span><br>
+    <span style="color:#888">Δ offset: ${Math.round(dstY - mouseY)}px visual</span>
+  `;
+  hi.classList.add('visible');
+  hi.style.left = `${e.clientX - rect.left + 20}px`;
+  hi.style.top = `${e.clientY - rect.top - 40}px`;
+}
+
+function clearCursorMapping() {
+  cursorDots.forEach(d => d.remove());
+  cursorDots = [];
+  hoverInfo.classList.remove('visible');
+}
+
+// ========================================================================
+// Sidebar Info
+// ========================================================================
+function updateSidebar() {
+  monitors.forEach((m, idx) => {
+    const card = document.getElementById(`card-mon${idx + 1}`);
+    card.innerHTML = `
+      <div class="card-title" style="color:${m.color}">${m.brand} (${m.name})</div>
+      <div class="info-row"><span class="label">Resolution</span><span class="value">${m.widthPx}×${m.heightPx}</span></div>
+      <div class="info-row"><span class="label">Rotation</span><span class="value">${m.rotation}</span></div>
+      <div class="info-row"><span class="label">Position</span><span class="value">(${m.x}, ${m.y})</span></div>
+      <div class="info-row"><span class="label">Physical</span><span class="value">${m.widthMM}×${m.heightMM} mm</span></div>
+      <div class="info-row"><span class="label">Diagonal</span><span class="value">${m.diagInches.toFixed(1)}"</span></div>
+      <div class="info-row"><span class="label">H-DPI</span><span class="value" style="color:${m.color}">${m.dpiH.toFixed(1)}</span></div>
+      <div class="info-row"><span class="label">V-DPI</span><span class="value" style="color:${m.color}">${m.dpiV.toFixed(1)}</span></div>
+    `;
+  });
+
+  const ratio = monitors[0].dpi / monitors[1].dpi;
+  document.getElementById('scaleFactor').textContent = `×${ratio.toFixed(4)}`;
+  document.getElementById('scaleDetails').innerHTML = `
+    <div class="info-row"><span class="label">BenQ → Dell</span><span class="value">×${(1/ratio).toFixed(4)}</span></div>
+    <div class="info-row"><span class="label">Dell → BenQ</span><span class="value">×${ratio.toFixed(4)}</span></div>
+    <div class="info-row"><span class="label">DPI difference</span><span class="value">${((ratio - 1) * 100).toFixed(1)}%</span></div>
+  `;
+}
+
+// ========================================================================
+// Init
+// ========================================================================
+window.addEventListener('resize', render);
+render();
+</script>
+</body>
+</html>
