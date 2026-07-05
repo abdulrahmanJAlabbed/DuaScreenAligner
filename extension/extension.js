@@ -10,6 +10,8 @@ import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 
+import { getCurrentState, logicalSize, applyPositions, APPLY_PERSISTENT } from './displayConfig.js';
+
 const DBUS_NAME = 'com.github.duascreenaligner.Daemon';
 const DBUS_PATH = '/com/github/duascreenaligner/Daemon';
 const DBUS_IFACE = 'com.github.duascreenaligner.Daemon';
@@ -78,6 +80,17 @@ function _parseXrandrOutput(output) {
 
     monitors.sort((a, b) => Number(Boolean(b.primary)) - Number(Boolean(a.primary)) || a.x - b.x || a.y - b.y);
     return monitors;
+}
+
+function _parseXrandrMM(output) {
+    const mmMap = {};
+    const re = /^(\S+)\s+connected\s+(?:primary\s+)?\d+x\d+\+\-?\d+\+\-?\d+\s*(?:\w+\s*)?(?:\(.*?\)\s+)?(\d+)mm\s+x\s+(\d+)mm/i;
+    for (const line of output.split('\n')) {
+        const match = line.match(re);
+        if (match)
+            mmMap[match[1]] = { width_mm: Number(match[2]), height_mm: Number(match[3]) };
+    }
+    return mmMap;
 }
 
 function _detectLayoutFromXrandr(devicePath = '') {
@@ -598,8 +611,13 @@ export default class DuaScreenAlignerExtension extends Extension {
         const left = new St.BoxLayout({ vertical: true, style_class: 'dua-edge-panel' });
         left.set_position(18, 86);
         left.set_size(226, Math.max(260, height - 172));
+        left.add_child(new St.Label({ text: 'Fix mouse crossing', style_class: 'dua-panel-heading' }));
+        left.add_child(new St.Label({ text: 'Line up screens so the cursor crosses at the same height.', style_class: 'dua-panel-hint' }));
+        left.add_child(this._button('Align tops', () => this._applyAnchorAlignment('tops')));
+        left.add_child(this._button('Align centers', () => this._applyAnchorAlignment('centers'), 'dua-tool-button dua-primary-button'));
+        left.add_child(this._button('Align bottoms', () => this._applyAnchorAlignment('bottoms')));
         left.add_child(new St.Label({ text: 'Presets', style_class: 'dua-panel-heading' }));
-        left.add_child(this._button('Recommended', () => this._applyPreset('recommended'), 'dua-tool-button dua-primary-button'));
+        left.add_child(this._button('Recommended', () => this._applyPreset('recommended')));
         left.add_child(this._button('Match GNOME', () => this._applyPreset('detect')));
         left.add_child(this._button('Side by side', () => this._applyPreset('side-by-side')));
         left.add_child(this._button('Stack', () => this._applyPreset('stack')));
@@ -796,6 +814,100 @@ export default class DuaScreenAlignerExtension extends Extension {
         return `background-image: url("${uri}"); background-size: ${Math.round(drawWidth)}px ${Math.round(drawHeight)}px; background-position: ${posX}px ${posY}px; background-repeat: no-repeat; background-color: rgba(24, 30, 36, 0.48);`;
     }
 
+
+    _applyAnchorAlignment(anchor) {
+        let state;
+        try {
+            state = getCurrentState();
+        } catch (error) {
+            this._setOverlayStatus(`Cannot read display config: ${error.message}`);
+            return;
+        }
+
+        if (state.logical.length < 2) {
+            this._setOverlayStatus('Only one monitor — nothing to align.');
+            return;
+        }
+
+        const entries = state.logical.map(entry => {
+            const mode = state.modeByConnector[entry.connectors[0]];
+            const size = logicalSize(mode, entry.transform);
+            return {
+                entry,
+                mode,
+                width: size.width,
+                height: size.height,
+            };
+        });
+        const sorted = [...entries].sort((a, b) => a.entry.x - b.entry.x || a.entry.y - b.entry.y);
+        const ref = sorted[0];
+
+        if (anchor === 'centers') {
+            const refCenter = ref.entry.y + ref.height / 2;
+            for (const screen of sorted) {
+                const newY = Math.round(refCenter - screen.height / 2);
+                screen.newY = newY;
+            }
+        } else {
+            const refEdge = anchor === 'bottoms'
+                ? ref.entry.y + ref.height
+                : ref.entry.y;
+            for (const screen of sorted) {
+                const newY = anchor === 'bottoms'
+                    ? Math.round(refEdge - screen.height)
+                    : refEdge;
+                screen.newY = newY;
+            }
+        }
+
+        const positions = {};
+        for (const screen of sorted)
+            positions[screen.entry.connectors[0]] = { x: screen.entry.x, y: screen.newY };
+
+        try {
+            applyPositions(state, positions, APPLY_PERSISTENT);
+        } catch (error) {
+            this._setOverlayStatus(`Failed to apply: ${error.message}`);
+            return;
+        }
+
+        this._overlayLayout = this._reloadLayoutFromXrandr(state, sorted, positions);
+        this._selectedMonitorIndex = 0;
+        this._refreshOverlayMap();
+        this._setOverlayStatus(`Applied ${anchor} alignment. Save to keep.`);
+    }
+
+    // Build a fresh overlay-layout payload from the known Mutter state + xrandr
+    // mm data so the overlay stays in sync after applying real offsets.
+    _reloadLayoutFromXrandr(state, logicalEntries, positionsByConnector) {
+        let mmMap = {};
+        try {
+            const [ok, stdout] = GLib.spawn_command_line_sync('xrandr --query');
+            if (ok && stdout) {
+                const text = new TextDecoder().decode(stdout);
+                mmMap = _parseXrandrMM(text);
+            }
+        } catch (e) {
+            // ok: no mm data, DPI defaults to 96.
+        }
+
+        const monitors = logicalEntries.map((screen, i) => {
+            const pos = positionsByConnector[screen.entry.connectors[0]] || screen.entry;
+            const mm = mmMap[screen.entry.connectors[0]] || { width_mm: 0, height_mm: 0 };
+            return {
+                name: screen.entry.connectors[0],
+                primary: Boolean(screen.entry.primary),
+                width_px: screen.width,
+                height_px: screen.height,
+                x: Math.round(pos.x),
+                y: Math.round(pos.y),
+                width_mm: mm.width_mm,
+                height_mm: mm.height_mm,
+            };
+        });
+
+        return { monitors, device_path: '' };
+    }
 
     _applyPreset(name) {
         try {

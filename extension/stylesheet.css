@@ -108,6 +108,12 @@
     padding-bottom: 4px;
 }
 
+.dua-panel-hint {
+    font-size: 11px;
+    color: rgba(255, 255, 255, 0.42);
+    padding-bottom: 7px;
+}
+
 .dua-tool-button {
     min-height: 34px;
     padding: 8px 10px;
