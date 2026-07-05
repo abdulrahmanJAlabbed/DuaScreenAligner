@@ -373,7 +373,7 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
     fillPreferencesWindow(window) {
         this._settings = this.getSettings();
         this._window = window;
-        this._imageFitMode = 'cover';
+        this._imageFitMode = this._settings.get_string('image-fit-mode') || 'cover';
         this._imageSource = this._settings.get_string('image-source') || 'panorama';
         this._localImagePath = this._settings.get_string('image-local-path');
         this._showImagePreview = true;
@@ -469,6 +469,7 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
             ['stretch', _('Stretch: distort')],
         ], this._imageFitMode, value => {
             this._imageFitMode = value || 'cover';
+            this._settings.set_string('image-fit-mode', this._imageFitMode);
         }), -1);
         imageBox.append(imageRow);
 
@@ -543,7 +544,8 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
             ['contain', _('Fit whole: no crop')],
             ['stretch', _('Stretch: distort')],
         ], this._imageFitMode, value => {
-            this._imageFitMode = value;
+            this._imageFitMode = value || 'cover';
+            this._settings.set_string('image-fit-mode', this._imageFitMode);
             this._previewArea.queue_draw();
         }), -1);
         imageControls.insert(this._makeSwitchControl(_('Show image'), this._showImagePreview, value => {
@@ -1013,6 +1015,51 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
         cr.restore();
     }
 
+    _loadImageCrops() {
+        try {
+            const parsed = JSON.parse(this._settings.get_string("image-crops") || "{}");
+            return parsed && typeof parsed === "object" ? parsed : {};
+        } catch (error) {
+            logError(error, "[DuaScreen] Failed to parse image crop settings");
+            return {};
+        }
+    }
+
+    _monitorCropKey(monitor) {
+        return monitor.name || (monitor.width_px + "x" + monitor.height_px);
+    }
+
+    _drawSelectedImageForMonitor(cr, monitor, bounds, crop = {}) {
+        const monitorRect = {
+            x: monitor.x - bounds.minX,
+            y: monitor.y - bounds.minY,
+            width: monitor.width_px,
+            height: monitor.height_px,
+        };
+        const monitorBounds = {
+            minX: monitorRect.x,
+            minY: monitorRect.y,
+            width: monitorRect.width,
+            height: monitorRect.height,
+        };
+        const baseRect = this._imageBounds(monitorBounds);
+        const scale = Math.max(0.2, Math.min(5, Number(crop.scale) || 1));
+        const imageWidth = baseRect.width * scale;
+        const imageHeight = baseRect.height * scale;
+        const imageRect = {
+            x: monitorRect.x + (monitorRect.width - imageWidth) / 2 + (Number(crop.x) || 0),
+            y: monitorRect.y + (monitorRect.height - imageHeight) / 2 + (Number(crop.y) || 0),
+            width: imageWidth,
+            height: imageHeight,
+        };
+
+        cr.save();
+        cr.rectangle(monitorRect.x, monitorRect.y, monitorRect.width, monitorRect.height);
+        cr.clip();
+        this._drawSelectedImage(cr, imageRect);
+        cr.restore();
+    }
+
     _drawFitGuides(cr, imageRect, width, height) {
         cr.setLineWidth(1.4);
         cr.setSourceRGBA(1, 1, 1, 0.55);
@@ -1068,18 +1115,25 @@ export default class DuaScreenPreferences extends ExtensionPreferences {
         cr.setSourceRGB(0.02, 0.02, 0.025);
         cr.paint();
 
-        cr.save();
-        for (const monitor of monitors) {
-            cr.rectangle(
-                monitor.x - bounds.minX,
-                monitor.y - bounds.minY,
-                monitor.width_px,
-                monitor.height_px
-            );
+        const cropMode = this._settings.get_string("image-crop-mode") || "global";
+        if (cropMode === "per-monitor") {
+            const crops = this._loadImageCrops();
+            for (const monitor of monitors)
+                this._drawSelectedImageForMonitor(cr, monitor, bounds, crops[this._monitorCropKey(monitor)] || {});
+        } else {
+            cr.save();
+            for (const monitor of monitors) {
+                cr.rectangle(
+                    monitor.x - bounds.minX,
+                    monitor.y - bounds.minY,
+                    monitor.width_px,
+                    monitor.height_px
+                );
+            }
+            cr.clip();
+            this._drawSelectedImage(cr, this._wallpaperImageRect(bounds));
+            cr.restore();
         }
-        cr.clip();
-        this._drawSelectedImage(cr, this._wallpaperImageRect(bounds));
-        cr.restore();
 
         surface.writeToPNG(outputPath);
         surface.finish();

@@ -75,6 +75,27 @@
       </description>
     </key>
 
+    <!-- Image Fit Mode: cover, contain, or stretch. -->
+    <key name="image-fit-mode" type="s">
+      <default>'cover'</default>
+      <summary>Wallpaper image fit mode</summary>
+      <description>Controls how the selected image is fitted across the monitor layout.</description>
+    </key>
+
+    <!-- Image Crop Mode: global or per-monitor. -->
+    <key name="image-crop-mode" type="s">
+      <default>'global'</default>
+      <summary>Wallpaper crop mode</summary>
+      <description>Use one global image placement or separate crop placement per monitor.</description>
+    </key>
+
+    <!-- Image Crops: JSON map of monitor name to x, y, and scale adjustments. -->
+    <key name="image-crops" type="s">
+      <default>'{}'</default>
+      <summary>Per-monitor wallpaper crop adjustments</summary>
+      <description>JSON object keyed by monitor name with x, y, and scale crop adjustments.</description>
+    </key>
+
     <!-- Open Overlay Request: incremented by preferences to ask the Shell extension to open the editor overlay. -->
     <key name="open-overlay-request" type="i">
       <default>0</default>

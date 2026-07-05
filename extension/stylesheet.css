@@ -140,13 +140,22 @@
 }
 
 .dua-monitor-card {
-    background-color: rgba(53, 132, 228, 0.46);
-    border: 2px solid rgba(255, 255, 255, 0.76);
+    background-color: rgba(24, 30, 36, 0.52);
+    border: 2px solid rgba(255, 255, 255, 0.78);
     border-radius: 7px;
     color: #ffffff;
     font-weight: 700;
     padding: 10px;
     text-align: left;
+}
+
+.dua-monitor-label {
+    color: #ffffff;
+    background-color: rgba(0, 0, 0, 0.46);
+    border-radius: 5px;
+    padding: 7px;
+    font-size: 12px;
+    font-weight: 700;
 }
 
 .dua-monitor-card:hover,
@@ -174,4 +183,13 @@
 
 .dua-nudge-row {
     spacing: 8px;
+}
+
+.dua-map-surface {
+    background-repeat: no-repeat;
+    background-position: center;
+}
+
+.dua-monitor-card:active {
+    background-color: rgba(53, 132, 228, 0.50);
 }
