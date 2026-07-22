@@ -35,30 +35,32 @@ const fixedOne = 1 << fixedShift
 // cursor crosses from one monitor to another, and scales the movement
 // delta by the ratio of the two monitors' physical DPI values.
 //
-// Thread Safety: The layout can be atomically swapped via SetLayout()
-// (called from the DBus goroutine) while the event loop reads it via
-// atomic pointer load. The cursor position is only accessed from the
-// event loop goroutine — no locking needed there.
+// Thread Safety: The layout is atomically swapped via SetLayout() from
+// the DBus goroutine and read via atomic pointer load in the hot path.
+// Cursor state (position, accumulator, monitor index) is protected by
+// cursorMu: the event-loop goroutine acquires it in Transform(), and
+// DBus-triggered SetLayout/SetCursorPosition also acquire it.
 type TransformEngine struct {
 	// layout holds the current monitor topology, atomically swapped.
 	// Stored as atomic.Pointer[transformLayout] for lock-free reads.
 	layout atomic.Pointer[transformLayout]
 
-	// cursorX and cursorY track the virtual cursor position in the
-	// unified logical coordinate space. Only accessed from the event
-	// loop goroutine (single writer), so no synchronization needed.
-	cursorX int
-	cursorY int
-
-	// accumX and accumY store the fractional remainder from fixed-point
-	// scaling, preventing drift over time. These sub-pixel remainders
-	// are carried forward between events.
-	accumX int64
-	accumY int64
-
-	// currentMonitor caches the index of the monitor the cursor is
-	// currently on, avoiding a full scan on every event.
+	// cursorMu serializes access to all cursor-tracking fields below,
+	// protecting against races between the DBus goroutine (SetLayout,
+	// SetCursorPosition) and the event-loop goroutine (Transform).
+	cursorMu sync.Mutex
+	cursorX  int
+	cursorY  int
+	accumX   int64
+	accumY   int64
 	currentMonitor int
+
+	// cursorTracked is set once a layout has initialized the cursor.
+	// Subsequent SetLayout calls preserve the tracked position when it
+	// still falls inside the new layout, so re-applying a layout (e.g.
+	// every drag in the prefs editor) doesn't teleport the tracked cursor
+	// and glitch the scaling mid-movement.
+	cursorTracked bool
 
 	// enabled controls whether transformation is active.
 	// When disabled, events pass through with identity scaling.
@@ -115,9 +117,16 @@ func (te *TransformEngine) SetLayout(cfg *LayoutConfig) {
 	// Copy monitors.
 	copy(layout.monitors, cfg.Monitors)
 
-	// Use the first monitor's DPI as the baseline (1.0).
-	// All other monitors will scale relative to this.
-	baselineDPI := layout.monitors[0].DPI()
+	// Use the primary monitor's DPI as the baseline (1.0) so the main
+	// screen's cursor feel is untouched; fall back to the first monitor.
+	baselineIdx := 0
+	for i := range layout.monitors {
+		if layout.monitors[i].Primary {
+			baselineIdx = i
+			break
+		}
+	}
+	baselineDPI := layout.monitors[baselineIdx].DPI()
 	if baselineDPI == 0 {
 		baselineDPI = 96.0
 	}
@@ -157,12 +166,27 @@ func (te *TransformEngine) SetLayout(cfg *LayoutConfig) {
 	// Atomically swap the layout pointer.
 	te.layout.Store(layout)
 
-	// Initialize cursor to center of first monitor.
-	te.cursorX = layout.monitors[0].X + layout.monitors[0].WidthPx/2
-	te.cursorY = layout.monitors[0].Y + layout.monitors[0].HeightPx/2
-	te.currentMonitor = 0
+	te.cursorMu.Lock()
+	inBounds := te.cursorTracked &&
+		te.cursorX >= layout.totalMinX && te.cursorX < layout.totalMaxX &&
+		te.cursorY >= layout.totalMinY && te.cursorY < layout.totalMaxY
+	if inBounds {
+		// Keep the tracked position; just re-derive which monitor it is on.
+		te.currentMonitor = te.findMonitor(layout, te.cursorX, te.cursorY)
+		if te.currentMonitor < 0 {
+			te.currentMonitor = 0
+		}
+	} else {
+		// First layout (or cursor now out of bounds): center on monitor[0].
+		te.cursorX = layout.monitors[0].X + layout.monitors[0].WidthPx/2
+		te.cursorY = layout.monitors[0].Y + layout.monitors[0].HeightPx/2
+		te.currentMonitor = 0
+	}
+	// Scale factors changed; stale sub-pixel remainders are meaningless.
 	te.accumX = 0
 	te.accumY = 0
+	te.cursorTracked = true
+	te.cursorMu.Unlock()
 }
 
 // SetCursorPosition manually updates the tracked logical cursor position.
@@ -170,6 +194,12 @@ func (te *TransformEngine) SetLayout(cfg *LayoutConfig) {
 // actual cursor position, preventing drift.
 func (te *TransformEngine) SetCursorPosition(x, y int) {
 	layout := te.layout.Load()
+
+	te.cursorMu.Lock()
+	defer te.cursorMu.Unlock()
+
+	te.cursorTracked = true
+
 	if layout == nil {
 		te.cursorX = x
 		te.cursorY = y
@@ -178,7 +208,7 @@ func (te *TransformEngine) SetCursorPosition(x, y int) {
 
 	te.cursorX = clamp(x, layout.totalMinX, layout.totalMaxX-1)
 	te.cursorY = clamp(y, layout.totalMinY, layout.totalMaxY-1)
-	
+
 	te.currentMonitor = te.findMonitor(layout, te.cursorX, te.cursorY)
 	if te.currentMonitor < 0 {
 		te.currentMonitor = 0
@@ -197,7 +227,6 @@ func (te *TransformEngine) SetCursorPosition(x, y int) {
 // Returns:
 //   - correctedDX, correctedDY: the DPI-corrected movement to inject via uinput.
 func (te *TransformEngine) Transform(rawDX, rawDY int32) (int32, int32) {
-	// Fast path: if disabled or no layout, pass through.
 	if !te.enabled.Load() {
 		return rawDX, rawDY
 	}
@@ -207,42 +236,36 @@ func (te *TransformEngine) Transform(rawDX, rawDY int32) (int32, int32) {
 		return rawDX, rawDY
 	}
 
-	// 1. Identify current monitor.
-	// We use the last known good monitor as the starting point for scaling.
-	// In continuous scaling, we scale by the DPI of where we are NOW.
+	te.cursorMu.Lock()
+
 	monitorIdx := te.currentMonitor
 	if monitorIdx < 0 || monitorIdx >= len(layout.monitors) {
 		monitorIdx = 0
 	}
 
-	// 2. Apply scaling factor for the current monitor.
 	scale := layout.scaleFactors[monitorIdx]
-	
-	// Apply fixed-point scaling with accumulator for sub-pixel precision.
+
 	scaledX := int64(rawDX)*scale + te.accumX
 	scaledY := int64(rawDY)*scale + te.accumY
 
-	// Extract integer part.
 	correctedDX := int32(scaledX >> fixedShift)
 	correctedDY := int32(scaledY >> fixedShift)
 
-	// Store fractional remainder.
 	te.accumX = scaledX - (int64(correctedDX) << fixedShift)
 	te.accumY = scaledY - (int64(correctedDY) << fixedShift)
 
-	// 3. Update internal logical position to detect boundary crossings.
-	// We update with CORRECTED deltas because that's what the OS sees.
 	te.cursorX += int(correctedDX)
 	te.cursorY += int(correctedDY)
 
-	// 4. Clamp to desktop bounds and update monitor cache.
 	te.cursorX = clamp(te.cursorX, layout.totalMinX, layout.totalMaxX-1)
 	te.cursorY = clamp(te.cursorY, layout.totalMinY, layout.totalMaxY-1)
-	
+
 	te.currentMonitor = te.findMonitor(layout, te.cursorX, te.cursorY)
 	if te.currentMonitor < 0 {
-		te.currentMonitor = monitorIdx // Stay on last known if outside all.
+		te.currentMonitor = monitorIdx
 	}
+
+	te.cursorMu.Unlock()
 
 	return correctedDX, correctedDY
 }
@@ -278,18 +301,4 @@ func clamp(v, lo, hi int) int {
 		return hi
 	}
 	return v
-}
-
-// ============================================================================
-// Pool for layout configs (used by DBus handler, not hot path)
-// ============================================================================
-
-// layoutConfigPool recycles LayoutConfig objects to reduce GC pressure
-// from repeated DBus SetLayout calls. NOT used in the evdev hot path.
-var layoutConfigPool = sync.Pool{
-	New: func() interface{} {
-		return &LayoutConfig{
-			Monitors: make([]MonitorConfig, 0, 4), // Pre-allocate for typical setups.
-		}
-	},
 }

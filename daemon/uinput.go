@@ -9,6 +9,8 @@ package main
 import (
 	"encoding/binary"
 	"fmt"
+	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -86,6 +88,10 @@ type UinputWriter struct {
 	// created tracks whether UI_DEV_CREATE has been called, ensuring
 	// proper cleanup via UI_DEV_DESTROY.
 	created bool
+
+	// pollFds is a pre-allocated poll set for writeAll, kept on the struct
+	// so the hot path performs zero heap allocations.
+	pollFds [1]unix.PollFd
 }
 
 // CreateVirtualMouse opens /dev/uinput, configures a virtual relative mouse
@@ -166,6 +172,44 @@ func (w *UinputWriter) ioctl(request, value int) error {
 	return nil
 }
 
+// writeDeadline bounds how long writeAll waits for the uinput fd to become
+// writable before giving up and dropping the event. Without a deadline, a
+// full uinput buffer caused a tight EAGAIN retry loop that pegged one CPU
+// core at 100% while holding the exclusive device grab — mouse dead,
+// desktop apparently frozen.
+const writeDeadline = time.Second
+
+// writeAll writes buf to the uinput fd. On EAGAIN it polls for writability
+// (bounded by writeDeadline) instead of busy-looping; EINTR is retried.
+func (w *UinputWriter) writeAll(buf []byte) error {
+	deadline := time.Now().Add(writeDeadline)
+	for len(buf) > 0 {
+		n, err := unix.Write(w.fd, buf)
+		if n > 0 {
+			buf = buf[n:]
+			continue
+		}
+		if err == syscall.EINTR {
+			continue
+		}
+		if err == syscall.EAGAIN {
+			if time.Now().After(deadline) {
+				return fmt.Errorf("uinput not writable for %v, dropping event: %w", writeDeadline, err)
+			}
+			// Sleep in the kernel until writable (or 100ms), zero CPU burn.
+			w.pollFds[0] = unix.PollFd{Fd: int32(w.fd), Events: unix.POLLOUT}
+			if _, perr := unix.Poll(w.pollFds[:], 100); perr != nil && perr != unix.EINTR {
+				return fmt.Errorf("uinput poll error: %w", perr)
+			}
+			continue
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // InjectEvent writes a single input_event to the virtual device.
 //
 // ZERO-ALLOCATION HOT PATH:
@@ -174,8 +218,7 @@ func (w *UinputWriter) ioctl(request, value int) error {
 // intermediate buffer allocation occurs.
 func (w *UinputWriter) InjectEvent(ev *InputEvent) error {
 	buf := unsafe.Slice((*byte)(unsafe.Pointer(ev)), inputEventSize)
-	_, err := unix.Write(w.fd, buf)
-	if err != nil {
+	if err := w.writeAll(buf); err != nil {
 		return fmt.Errorf("uinput write error: %w", err)
 	}
 	return nil
@@ -191,13 +234,11 @@ func (w *UinputWriter) InjectEvents(events []InputEvent) error {
 	if len(events) == 0 {
 		return nil
 	}
-	
-	// Create a byte slice header that covers the entire slice of events.
+
 	size := len(events) * inputEventSize
 	buf := unsafe.Slice((*byte)(unsafe.Pointer(&events[0])), size)
-	
-	_, err := unix.Write(w.fd, buf)
-	if err != nil {
+
+	if err := w.writeAll(buf); err != nil {
 		return fmt.Errorf("uinput batch write error: %w", err)
 	}
 	return nil

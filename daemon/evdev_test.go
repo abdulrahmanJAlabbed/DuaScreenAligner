@@ -6,6 +6,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -13,6 +14,18 @@ import (
 
 	"golang.org/x/sys/unix"
 )
+
+// readEventRetry reads an event, retrying on ErrReadTimeout (the poll-based
+// reader returns it periodically so callers can check for shutdown).
+func readEventRetry(r *EvdevReader, ev *InputEvent) error {
+	for {
+		err := r.ReadEvent(ev)
+		if errors.Is(err, ErrReadTimeout) {
+			continue
+		}
+		return err
+	}
+}
 
 // TestInputEventSize verifies that the Go InputEvent struct matches the
 // kernel's struct input_event size on the current architecture.
@@ -144,7 +157,7 @@ func TestReadEventFromPipe(t *testing.T) {
 	// Read and verify each event.
 	for i, expected := range testEvents {
 		var ev InputEvent
-		if err := reader.ReadEvent(&ev); err != nil {
+		if err := readEventRetry(reader, &ev); err != nil {
 			t.Fatalf("ReadEvent[%d] failed: %v", i, err)
 		}
 
@@ -212,7 +225,7 @@ func BenchmarkReadEvent(b *testing.B) {
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		if err := reader.ReadEvent(&ev); err != nil {
+		if err := readEventRetry(reader, &ev); err != nil {
 			b.Fatalf("ReadEvent: %v", err)
 		}
 	}

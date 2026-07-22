@@ -7,6 +7,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,6 +16,13 @@ import (
 
 	"golang.org/x/sys/unix"
 )
+
+// ErrReadTimeout is returned by ReadEvent when no event arrived within the
+// poll interval. It gives the caller a chance to check for shutdown and
+// retry, instead of blocking forever inside unix.Read — a blocked read
+// cannot be interrupted by closing the fd, which previously leaked reader
+// goroutines that stole events from the re-opened device (fd reuse).
+var ErrReadTimeout = errors.New("evdev read timeout")
 
 // ============================================================================
 // Linux Input Event Constants
@@ -96,14 +104,20 @@ type EvdevReader struct {
 	// grabbed tracks whether EVIOCGRAB is currently held, used to ensure
 	// cleanup even if the caller forgets to call Ungrab().
 	grabbed bool
+
+	// pollFds is a pre-allocated poll set for ReadEvent, kept on the struct
+	// so the hot path performs zero heap allocations.
+	pollFds [1]unix.PollFd
 }
 
 // OpenEvdev opens an evdev device file and retrieves its name.
 // Does NOT grab the device — call Grab() separately after confirming
 // the device is the correct one.
 func OpenEvdev(devicePath string) (*EvdevReader, error) {
-	// Open read-only; we only consume events, never write to the physical device.
-	fd, err := unix.Open(devicePath, unix.O_RDONLY, 0)
+	// Open read-only and non-blocking; we only consume events, never write
+	// to the physical device. Non-blocking + poll lets the read loop notice
+	// shutdown requests instead of blocking forever in unix.Read.
+	fd, err := unix.Open(devicePath, unix.O_RDONLY|unix.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open %s: %w", devicePath, err)
 	}
@@ -179,27 +193,51 @@ func (r *EvdevReader) Ungrab() error {
 	return nil
 }
 
-// ReadEvent performs a blocking read of a single input_event from the device.
+// readPollTimeoutMs bounds how long ReadEvent waits for input before
+// returning ErrReadTimeout so the caller can check for shutdown.
+const readPollTimeoutMs = 500
+
+// ReadEvent reads a single input_event from the device, waiting at most
+// readPollTimeoutMs. Returns ErrReadTimeout if no event arrived in time.
 //
 // ZERO-ALLOCATION HOT PATH:
 // The event is read directly into the caller-provided *InputEvent using an
-// unsafe byte slice overlay. No heap allocation occurs — the InputEvent
-// should be stack-allocated by the caller.
+// unsafe byte slice overlay, and the poll set is pre-allocated on the
+// EvdevReader. No heap allocation occurs.
 //
-// Returns the number of bytes read (should be inputEventSize) or an error.
 // On device disconnect, returns an error wrapping unix.ENODEV.
 func (r *EvdevReader) ReadEvent(ev *InputEvent) error {
+	// Wait for readable data (bounded), so a shutdown request is noticed
+	// within readPollTimeoutMs even when the mouse is idle.
+	r.pollFds[0] = unix.PollFd{Fd: int32(r.fd), Events: unix.POLLIN}
+	n, err := unix.Poll(r.pollFds[:], readPollTimeoutMs)
+	if err != nil {
+		if err == unix.EINTR {
+			return ErrReadTimeout
+		}
+		return fmt.Errorf("evdev poll error on %s: %w", r.path, err)
+	}
+	if n == 0 {
+		return ErrReadTimeout
+	}
+	if r.pollFds[0].Revents&(unix.POLLERR|unix.POLLHUP|unix.POLLNVAL) != 0 {
+		return fmt.Errorf("evdev device gone: %s: %w", r.path, unix.ENODEV)
+	}
+
 	// Create a byte slice header that points directly to the InputEvent's
 	// memory. This is the key trick: unix.Read fills the struct's bytes
 	// without any intermediate buffer allocation.
 	buf := unsafe.Slice((*byte)(unsafe.Pointer(ev)), inputEventSize)
 
-	n, err := unix.Read(r.fd, buf)
+	rn, err := unix.Read(r.fd, buf)
 	if err != nil {
+		if err == unix.EAGAIN || err == unix.EINTR {
+			return ErrReadTimeout // Raced with another consumer; retry.
+		}
 		return fmt.Errorf("evdev read error on %s: %w", r.path, err)
 	}
-	if n != inputEventSize {
-		return fmt.Errorf("partial evdev read: got %d bytes, expected %d", n, inputEventSize)
+	if rn != inputEventSize {
+		return fmt.Errorf("partial evdev read: got %d bytes, expected %d", rn, inputEventSize)
 	}
 	return nil
 }

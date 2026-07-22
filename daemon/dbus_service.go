@@ -84,22 +84,16 @@ const introspectXML = `
 // It holds references to the shared TransformEngine and AtomicState that
 // are also used by the event loop goroutine.
 type DBusService struct {
-	// conn is the active DBus system bus connection.
 	conn *dbus.Conn
 
-	// transform is the shared transformation engine.
-	// Layout updates from SetLayout() are atomically pushed here.
 	transform *TransformEngine
 
-	// state is the shared atomic daemon state.
 	state *AtomicState
 
-	// currentLayout stores the last successfully applied layout config
-	// for GetLayout() retrieval. Protected by single-writer semantics
-	// (only DBus goroutine writes; event loop never reads this field).
 	currentLayout *LayoutConfig
 
-	// reloadCh signals the event loop to re-scan and re-grab the device.
+	lastDevicePath string
+
 	reloadCh chan string
 }
 
@@ -190,12 +184,17 @@ func (s *DBusService) SetLayout(layoutJSON string) (bool, *dbus.Error) {
 	s.transform.SetLayout(cfg)
 	s.currentLayout = cfg
 
-	// Signal the event loop to re-scan and re-grab the device (in case the path changed).
-	select {
-	case s.reloadCh <- cfg.DevicePath:
-		log.Printf("SetLayout: applied %d monitors, reload requested for %q", len(cfg.Monitors), cfg.DevicePath)
-	default:
-		log.Printf("SetLayout: applied %d monitors, reload deferred (busy)", len(cfg.Monitors))
+	// Only reload if the device path actually changed.
+	if cfg.DevicePath != s.lastDevicePath {
+		s.lastDevicePath = cfg.DevicePath
+		select {
+		case s.reloadCh <- cfg.DevicePath:
+			log.Printf("SetLayout: applied %d monitors, reload for %q", len(cfg.Monitors), cfg.DevicePath)
+		default:
+			log.Printf("SetLayout: applied %d monitors, reload deferred (busy)", len(cfg.Monitors))
+		}
+	} else {
+		log.Printf("SetLayout: applied %d monitors, same device", len(cfg.Monitors))
 	}
 
 	// Emit LayoutApplied signal.

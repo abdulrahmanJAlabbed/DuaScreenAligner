@@ -7,7 +7,9 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -21,76 +23,61 @@ import (
 // Example: "DP-0 connected primary 1920x1080+1080+485 (normal ...) 531mm x 298mm"
 // Example: "HDMI-0 connected 1080x1920+0+0 left (normal ...) 598mm x 336mm"
 var xrandrLineRe = regexp.MustCompile(
-	`^(\S+)\s+connected\s+(?:primary\s+)?(\d+)x(\d+)\+(\d+)\+(\d+)\s+(\w+)?\s*\(.*?\)\s+(\d+)mm\s+x\s+(\d+)mm`,
+	`^(\S+)\s+connected\s+(primary\s+)?(\d+)x(\d+)\+(\d+)\+(\d+)\s+(\w+)?\s*\(.*?\)\s+(\d+)mm\s+x\s+(\d+)mm`,
 )
 
-// displayEnv holds the environment variables needed to run xrandr.
-type displayEnv struct {
-	Display string
-	XAuth   string
-}
-
-// discoverDisplayEnv finds DISPLAY and XAUTHORITY by scanning /proc for
-// processes that have these set. The daemon runs as root so it can read
-// any process's environ file.
-func discoverDisplayEnv() *displayEnv {
-	entries, err := os.ReadDir("/proc")
+// scanProcEnviron reads /proc/$pid/environ in chunks to find DISPLAY and
+// XAUTHORITY. Avoids loading the full environment (which may contain
+// secrets) into memory.
+func scanProcEnviron(pid string) (display, xauth string) {
+	f, err := os.Open(filepath.Join("/proc", pid, "environ"))
 	if err != nil {
-		return nil
+		return "", ""
 	}
+	defer f.Close()
 
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		// Only look at numeric directories (PIDs).
-		pid := entry.Name()
-		if pid[0] < '1' || pid[0] > '9' {
-			continue
-		}
+	const bufSize = 4096
+	var buf [bufSize]byte
+	var carry []byte
 
-		// Skip root-owned processes (UID 0) — they won't have display vars.
-		statusData, err := os.ReadFile(filepath.Join("/proc", pid, "status"))
-		if err != nil {
-			continue
-		}
-		isRoot := false
-		for _, line := range strings.Split(string(statusData), "\n") {
-			if strings.HasPrefix(line, "Uid:") {
-				fields := strings.Fields(line)
-				if len(fields) >= 2 && fields[1] == "0" {
-					isRoot = true
+	for {
+		n, err := f.Read(buf[:])
+		if n > 0 {
+			data := append(carry, buf[:n]...)
+			lastNull := bytes.LastIndexByte(data, 0)
+			if lastNull >= 0 {
+				carry = make([]byte, len(data)-lastNull-1)
+				copy(carry, data[lastNull+1:])
+				data = data[:lastNull]
+			} else {
+				carry = data[:0]
+				display = ""
+				xauth = ""
+				continue
+			}
+
+			for _, chunk := range bytes.Split(data, []byte{0}) {
+				if bytes.HasPrefix(chunk, []byte("DISPLAY=")) {
+					display = string(chunk[8:])
 				}
-				break
+				if bytes.HasPrefix(chunk, []byte("XAUTHORITY=")) {
+					xauth = string(chunk[11:])
+				}
+			}
+
+			if display != "" {
+				return display, xauth
 			}
 		}
-		if isRoot {
-			continue
+		if err != nil && err != io.EOF {
+			return "", ""
 		}
-
-		// Read this process's environment.
-		envData, err := os.ReadFile(filepath.Join("/proc", pid, "environ"))
-		if err != nil {
-			continue
-		}
-
-		var display, xauth string
-		for _, chunk := range strings.Split(string(envData), "\x00") {
-			if strings.HasPrefix(chunk, "DISPLAY=") {
-				display = chunk[len("DISPLAY="):]
-			}
-			if strings.HasPrefix(chunk, "XAUTHORITY=") {
-				xauth = chunk[len("XAUTHORITY="):]
-			}
-		}
-
-		if display != "" {
-			log.Printf("xrandr: found DISPLAY=%s XAUTHORITY=%s from PID %s", display, xauth, pid)
-			return &displayEnv{Display: display, XAuth: xauth}
+		if err == io.EOF {
+			break
 		}
 	}
 
-	return nil
+	return display, xauth
 }
 
 // DetectLayoutFromXrandr runs `xrandr --query` and parses the output into a
@@ -100,17 +87,20 @@ func discoverDisplayEnv() *displayEnv {
 // When running as a root systemd service, discovers DISPLAY and XAUTHORITY
 // by scanning /proc for a desktop user's process that has these set.
 func DetectLayoutFromXrandr() *LayoutConfig {
-	env := discoverDisplayEnv()
+	display, xauth := discoverDisplayEnv()
+	if display != "" {
+		log.Printf("xrandr: found DISPLAY=%s XAUTHORITY=%s", display, xauth)
+	}
 
 	var output []byte
 	var err error
 
-	if env != nil {
+	if display != "" {
 		cmd := exec.Command("xrandr", "--query")
 		cmdEnv := os.Environ()
-		cmdEnv = append(cmdEnv, "DISPLAY="+env.Display)
-		if env.XAuth != "" {
-			cmdEnv = append(cmdEnv, "XAUTHORITY="+env.XAuth)
+		cmdEnv = append(cmdEnv, "DISPLAY="+display)
+		if xauth != "" {
+			cmdEnv = append(cmdEnv, "XAUTHORITY="+xauth)
 		}
 		cmd.Env = cmdEnv
 		output, err = cmd.CombinedOutput()
@@ -137,6 +127,50 @@ func DetectLayoutFromXrandr() *LayoutConfig {
 	return nil
 }
 
+// discoverDisplayEnv finds DISPLAY and XAUTHORITY by scanning /proc for
+// non-root processes that have DISPLAY set. Uses streaming reads to avoid
+// loading full environment files (which may contain secrets) into memory.
+func discoverDisplayEnv() (display, xauth string) {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return "", ""
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		pid := entry.Name()
+		if pid[0] < '1' || pid[0] > '9' {
+			continue
+		}
+
+		statusData, err := os.ReadFile(filepath.Join("/proc", pid, "status"))
+		if err != nil {
+			continue
+		}
+		isRoot := false
+		for _, line := range strings.Split(string(statusData), "\n") {
+			if strings.HasPrefix(line, "Uid:") {
+				fields := strings.Fields(line)
+				if len(fields) >= 2 && fields[1] == "0" {
+					isRoot = true
+				}
+				break
+			}
+		}
+		if isRoot {
+			continue
+		}
+
+		display, xauth = scanProcEnviron(pid)
+		if display != "" {
+			return display, xauth
+		}
+	}
+	return "", ""
+}
+
 
 // parseXrandrOutput extracts monitor configurations from raw xrandr output.
 func parseXrandrOutput(output string) *LayoutConfig {
@@ -149,13 +183,14 @@ func parseXrandrOutput(output string) *LayoutConfig {
 		}
 
 		name := m[1]
-		widthPx, _ := strconv.Atoi(m[2])
-		heightPx, _ := strconv.Atoi(m[3])
-		x, _ := strconv.Atoi(m[4])
-		y, _ := strconv.Atoi(m[5])
-		rotation := m[6] // "normal", "left", "right", "inverted"
-		physW, _ := strconv.Atoi(m[7])
-		physH, _ := strconv.Atoi(m[8])
+		primary := m[2] != ""
+		widthPx, _ := strconv.Atoi(m[3])
+		heightPx, _ := strconv.Atoi(m[4])
+		x, _ := strconv.Atoi(m[5])
+		y, _ := strconv.Atoi(m[6])
+		rotation := m[7] // "normal", "left", "right", "inverted"
+		physW, _ := strconv.Atoi(m[8])
+		physH, _ := strconv.Atoi(m[9])
 
 		// For rotated monitors, the physical dimensions reported by xrandr
 		// correspond to the un-rotated panel. We need to swap them so that
@@ -172,6 +207,7 @@ func parseXrandrOutput(output string) *LayoutConfig {
 			HeightPx: heightPx,
 			WidthMM:  float64(physW),
 			HeightMM: float64(physH),
+			Primary:  primary,
 		})
 	}
 

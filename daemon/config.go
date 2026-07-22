@@ -73,6 +73,12 @@ type MonitorConfig struct {
 	// DPIOverride, if non-zero, overrides the calculated DPI with a
 	// user-specified value. Useful for monitors that report incorrect EDID data.
 	DPIOverride float64 `json:"dpi_override,omitempty"`
+
+	// Primary marks the user's main monitor. The transform engine uses the
+	// primary monitor's DPI as the scaling baseline (factor 1.0), so cursor
+	// speed on the main screen is untouched and only the other screens are
+	// compensated.
+	Primary bool `json:"primary,omitempty"`
 }
 
 // DPI returns the effective horizontal DPI for this monitor.

@@ -11,13 +11,16 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
-	_ "net/http/pprof" // Side-effect import: registers pprof handlers
+	_ "net/http/pprof"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -151,7 +154,9 @@ func runEventLoop(
 	sigCh chan os.Signal,
 	defaultDevice string,
 ) bool {
-	// ---- Open the evdev device ----
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	devicePath := defaultDevice
 	reader, err := FindDeviceByPath(devicePath)
 	if err != nil {
@@ -191,8 +196,44 @@ func runEventLoop(
 	}
 	log.Printf("Virtual mouse created")
 
+	// wg tracks the reader goroutine. Cleanup MUST wait for it to exit
+	// before closing the fds: closing an fd under a live reader lets the
+	// kernel reuse the fd number for the next device, and the leaked
+	// goroutine then steals events from the new reader — lost button-up
+	// events, stuck mouse clicks. The poll-based ReadEvent guarantees the
+	// goroutine notices ctx cancellation within ~500ms.
+	var wg sync.WaitGroup
+
+	// heldButtons tracks BTN_LEFT..BTN_EXTRA press state so teardown can
+	// inject releases. Without this, a button pressed through the virtual
+	// mouse whose release arrives while the device is being swapped leaves
+	// the X master pointer with a phantom held button — stuck drags, dead
+	// clicks. Written only by the reader goroutine; read after wg.Wait()
+	// (WaitGroup provides the happens-before edge).
+	var heldButtons [BTN_EXTRA - BTN_LEFT + 1]bool
+
 	// Ensure cleanup on any exit path.
 	defer func() {
+		cancel()
+		wg.Wait()
+		// Release any buttons still held on the virtual device before
+		// destroying it, so the compositor never sees a phantom press.
+		released := false
+		for i := range heldButtons {
+			if heldButtons[i] {
+				var rel InputEvent
+				rel.Type = EV_KEY
+				rel.Code = uint16(BTN_LEFT + i)
+				rel.Value = 0
+				if err := writer.InjectEvent(&rel); err == nil {
+					released = true
+					log.Printf("Teardown: released held button 0x%x", rel.Code)
+				}
+			}
+		}
+		if released {
+			_ = writer.InjectSynReport()
+		}
 		writer.Close()
 		reader.Close()
 		log.Printf("Devices closed")
@@ -206,17 +247,23 @@ func runEventLoop(
 	}
 	dbusSvc.EmitStatusChanged()
 
-	// ---- Watchdog: auto-ungrab safety net ----
-	// If the event loop hangs or the process is about to be killed,
-	// this timer ensures the device is ungrabbed within 5 seconds.
+	// ---- Watchdog: idle detection ----
+	// Logs a single line when the device goes idle and another when events
+	// resume, instead of spamming every 5 seconds.
 	watchdogCh := make(chan struct{}, 1)
 	go func() {
 		timer := time.NewTimer(5 * time.Second)
 		defer timer.Stop()
+		idle := false
 		for {
 			select {
+			case <-ctx.Done():
+				return
 			case <-watchdogCh:
-				// Event received — reset the watchdog.
+				if idle {
+					log.Printf("WATCHDOG: events resumed")
+					idle = false
+				}
 				if !timer.Stop() {
 					select {
 					case <-timer.C:
@@ -225,40 +272,49 @@ func runEventLoop(
 				}
 				timer.Reset(5 * time.Second)
 			case <-timer.C:
-				// Watchdog expired — log warning but don't ungrab.
-				// (Ungrab only on actual errors or signals.)
-				log.Printf("WATCHDOG: no events for 5s — device may be idle or disconnected")
+				if !idle {
+					log.Printf("WATCHDOG: no events for 5s — device idle or disconnected")
+					idle = true
+				}
 				timer.Reset(5 * time.Second)
 			}
 		}
 	}()
 
 	// ---- Hot path: read → transform → inject ----
-	// The InputEvent is stack-allocated here. ReadEvent and InjectEvent
-	// operate on it via unsafe byte slice overlays — zero allocations.
 	var ev InputEvent
 
-	// Batching state: REL_X and REL_Y deltas are accumulated until EV_SYN.
 	var batchDX, batchDY int32
 
-	// errCh receives the first error from the read goroutine.
 	errCh := make(chan error, 1)
 
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		for {
-			// Blocking read — zero allocation.
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
 			if err := reader.ReadEvent(&ev); err != nil {
-				errCh <- err
+				// Timeout is the shutdown checkpoint, not an error.
+				if errors.Is(err, ErrReadTimeout) {
+					continue
+				}
+				select {
+				case errCh <- err:
+				case <-ctx.Done():
+				}
 				return
 			}
 
-			// Notify watchdog that we're still alive.
 			select {
 			case watchdogCh <- struct{}{}:
 			default:
 			}
 
-			// Branch based on event type.
 			switch ev.Type {
 			case EV_REL:
 				if ev.Code == REL_X {
@@ -266,43 +322,66 @@ func runEventLoop(
 				} else if ev.Code == REL_Y {
 					batchDY += ev.Value
 				} else {
-					// Scroll events (REL_WHEEL, etc.) pass through immediately.
 					if err := writer.InjectEvent(&ev); err != nil {
-						errCh <- err
+						select {
+						case errCh <- err:
+						case <-ctx.Done():
+						}
 						return
 					}
 				}
 
 			case EV_SYN:
-				if ev.Code == 0 { // SYN_REPORT
-					// Apply transformation to the accumulated batch.
+				if ev.Code == 0 {
 					if batchDX != 0 || batchDY != 0 {
 						correctedDX, correctedDY := transform.Transform(batchDX, batchDY)
 						if err := writer.InjectRelativeMove(correctedDX, correctedDY); err != nil {
-							errCh <- err
+							select {
+							case errCh <- err:
+							case <-ctx.Done():
+							}
 							return
 						}
 						batchDX = 0
 						batchDY = 0
 					} else {
-						// Pass through SYN_REPORT even if no movement (for buttons etc.)
 						if err := writer.InjectEvent(&ev); err != nil {
-							errCh <- err
+							select {
+							case errCh <- err:
+							case <-ctx.Done():
+							}
 							return
 						}
 					}
 				} else {
-					// Other SYN codes pass through.
 					if err := writer.InjectEvent(&ev); err != nil {
-						errCh <- err
+						select {
+						case errCh <- err:
+						case <-ctx.Done():
+						}
 						return
 					}
 				}
 
-			default:
-				// Buttons (EV_KEY), etc. pass through immediately.
+			case EV_KEY:
+				// Track mouse button state for teardown release injection.
+				if ev.Code >= BTN_LEFT && ev.Code <= BTN_EXTRA {
+					heldButtons[ev.Code-BTN_LEFT] = ev.Value != 0
+				}
 				if err := writer.InjectEvent(&ev); err != nil {
-					errCh <- err
+					select {
+					case errCh <- err:
+					case <-ctx.Done():
+					}
+					return
+				}
+
+			default:
+				if err := writer.InjectEvent(&ev); err != nil {
+					select {
+					case errCh <- err:
+					case <-ctx.Done():
+					}
 					return
 				}
 			}
@@ -314,22 +393,19 @@ func runEventLoop(
 	case sig := <-sigCh:
 		log.Printf("Received signal: %v", sig)
 		if sig == syscall.SIGHUP {
-			// SIGHUP: reload device, don't exit.
 			return false
 		}
-		return true // SIGTERM/SIGINT: exit.
+		return true
 
 	case newPath := <-reloadCh:
 		log.Printf("Device reload requested: %q", newPath)
 		if newPath != "" {
-			// The next iteration will use the new path.
-			// We store it by modifying the flag (safe: single select).
 			*flagDevice = newPath
 		}
-		return false // Retry
+		return false
 
 	case err := <-errCh:
 		log.Printf("Event loop error: %v", err)
-		return false // Retry
+		return false
 	}
 }
