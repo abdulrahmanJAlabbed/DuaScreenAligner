@@ -1,142 +1,24 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!--
-  GSettings Schema for DuaScreen Aligner GNOME Extension.
-
-  Defines all persisted configuration keys:
-  - monitor-layout: JSON-encoded monitor topology and DPI config
-  - enabled: whether cursor correction is active
-  - auto-start: whether to launch daemon on login
-  - input-device: selected evdev device path
-  - log-level: daemon log verbosity
--->
 <schemalist>
   <schema id="org.gnome.shell.extensions.dua-screen-aligner"
           path="/org/gnome/shell/extensions/dua-screen-aligner/">
 
-    <!-- Monitor Layout: JSON string containing the full monitor topology.
-         Schema: {"monitors": [...], "device_path": "..."} -->
     <key name="monitor-layout" type="s">
       <default>''</default>
       <summary>Monitor layout configuration</summary>
       <description>
         JSON-encoded monitor arrangement including position, resolution,
-        physical dimensions, and DPI overrides for each display.
+        physical dimensions, DPI overrides, primary flag, and the spanning
+        wallpaper image path used by the arrangement preview.
       </description>
     </key>
 
-    <!-- Enabled: Master switch for cursor DPI correction. -->
     <key name="enabled" type="b">
       <default>true</default>
       <summary>Enable cursor correction</summary>
       <description>
         When enabled, the daemon applies DPI-aware scaling to cursor
-        movement at monitor boundaries. When disabled, raw movement
-        passes through unmodified.
-      </description>
-    </key>
-
-    <!-- Auto-Start: Launch the daemon automatically on user login. -->
-    <key name="auto-start" type="b">
-      <default>true</default>
-      <summary>Start daemon automatically</summary>
-      <description>
-        When enabled, the DuaScreenAligner daemon is started via systemd
-        on user login.
-      </description>
-    </key>
-
-    <!-- Input Device: Path to the evdev device to intercept.
-         Empty string triggers auto-detection. -->
-    <key name="input-device" type="s">
-      <default>''</default>
-      <summary>Input device path</summary>
-      <description>
-        The evdev device path for the physical mouse to intercept
-        (e.g., /dev/input/event5). Leave empty for automatic detection.
-      </description>
-    </key>
-
-    <!-- Image Source: Selected bundled image id or local. -->
-    <key name="image-source" type="s">
-      <default>'panorama'</default>
-      <summary>Selected image source</summary>
-      <description>
-        The image source used by the preview and wallpaper exporter.
-        Built-in values are panorama, city, desert-coast, or local.
-      </description>
-    </key>
-
-    <!-- Image Local Path: User-selected local image path. -->
-    <key name="image-local-path" type="s">
-      <default>''</default>
-      <summary>Selected local image path</summary>
-      <description>
-        Absolute file path to a user-selected local image for preview and wallpaper export.
-      </description>
-    </key>
-
-    <!-- Image Fit Mode: cover, contain, or stretch. -->
-    <key name="image-fit-mode" type="s">
-      <default>'cover'</default>
-      <summary>Wallpaper image fit mode</summary>
-      <description>Controls how the selected image is fitted across the monitor layout.</description>
-    </key>
-
-    <!-- Image Crop Mode: global or per-monitor. -->
-    <key name="image-crop-mode" type="s">
-      <default>'global'</default>
-      <summary>Wallpaper crop mode</summary>
-      <description>Use one global image placement or separate crop placement per monitor.</description>
-    </key>
-
-    <!-- Wallpaper Anchor: tops, centers, or bottoms. Physical vertical reference used to align the image across monitors. -->
-    <key name="wallpaper-anchor" type="s">
-      <default>'centers'</default>
-      <summary>Wallpaper physical alignment anchor</summary>
-      <description>Vertical reference (tops, centers, bottoms) used to place the image continuously across physically different monitors.</description>
-    </key>
-
-    <!-- Image Crops: JSON map of monitor name to x, y, and scale adjustments. -->
-    <key name="image-crops" type="s">
-      <default>'{}'</default>
-      <summary>Per-monitor wallpaper crop adjustments</summary>
-      <description>JSON object keyed by monitor name with x, y, and scale crop adjustments.</description>
-    </key>
-
-    <!-- Open Overlay Request: incremented by preferences to ask the Shell extension to open the editor overlay. -->
-    <key name="open-overlay-request" type="i">
-      <default>0</default>
-      <summary>Open overlay request counter</summary>
-      <description>
-        Incremented by the preferences UI to request opening the on-screen editor overlay.
-      </description>
-    </key>
-
-    <!-- Log Level: Daemon diagnostic verbosity. -->
-    <key name="log-level" type="s">
-      <default>'info'</default>
-      <summary>Daemon log level</summary>
-      <description>
-        Controls the verbosity of daemon log output.
-        Valid values: error, warn, info, debug.
-      </description>
-    </key>
-
-    <!-- Label Size: Font size for measurement labels. -->
-    <key name="label-size" type="i">
-      <default>12</default>
-      <summary>Font size for measurement labels</summary>
-      <description>
-        Specifies the font size (in pixels) for the measurement labels displayed on screen borders.
-      </description>
-    </key>
-
-    <!-- Overlay Transparency: Transparency level for the overlay. -->
-    <key name="overlay-transparency" type="i">
-      <default>50</default>
-      <summary>Transparency level for the overlay</summary>
-      <description>
-        Specifies the transparency level (0-100) for the measurement overlay. 0 is fully transparent, 100 is fully opaque.
+        movement at monitor boundaries.
       </description>
     </key>
 
