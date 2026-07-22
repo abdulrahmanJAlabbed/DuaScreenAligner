@@ -74,6 +74,8 @@ install-daemon: build
 	@echo "Installing daemon binary..."
 	install -m 755 $(BUILD_DIR)/dua-screen-aligner $(BINDIR)/dua-screen-aligner
 	install -m 644 dbus/com.github.duascreenaligner.Daemon.conf /etc/dbus-1/system.d/
+	install -m 644 systemd/dua-screen-aligner.service /etc/systemd/system/
+	systemctl daemon-reload
 	@if systemctl is-enabled $(SERVICE_NAME) >/dev/null 2>&1; then \
 		echo "Restarting $(SERVICE_NAME)..."; \
 		systemctl restart $(SERVICE_NAME); \
@@ -90,9 +92,47 @@ install-extension:
 
 .PHONY: pack-extension
 pack-extension:
-	@echo "Packing GNOME Shell extension..."
+	@echo "Packing GNOME Shell extension for extensions.gnome.org..."
 	mkdir -p $(BUILD_DIR)
-	cd $(EXTENSION_DIR) && zip -r ../$(BUILD_DIR)/$(EXTENSION_UUID).zip .
+	gnome-extensions pack $(EXTENSION_DIR) \
+		--extra-source=displayConfig.js \
+		--extra-source=alignWizard.js \
+		--force -o $(BUILD_DIR)
+
+# Debian package for the daemon (binary + systemd unit + DBus policy).
+DEB_VERSION := $(shell git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
+ifeq ($(DEB_VERSION),)
+DEB_VERSION := 0.2.0
+endif
+DEB_DIR     := $(BUILD_DIR)/deb
+
+.PHONY: deb
+deb: build
+	@echo "Building .deb package..."
+	rm -rf $(DEB_DIR)
+	mkdir -p $(DEB_DIR)/DEBIAN $(DEB_DIR)/usr/bin \
+		$(DEB_DIR)/lib/systemd/system $(DEB_DIR)/etc/dbus-1/system.d
+	install -m 755 $(BUILD_DIR)/dua-screen-aligner $(DEB_DIR)/usr/bin/dua-screen-aligner
+	sed 's|/usr/local/bin/|/usr/bin/|' systemd/dua-screen-aligner.service \
+		> $(DEB_DIR)/lib/systemd/system/dua-screen-aligner.service
+	install -m 644 dbus/com.github.duascreenaligner.Daemon.conf \
+		$(DEB_DIR)/etc/dbus-1/system.d/
+	printf 'Package: dua-screen-aligner\nVersion: %s\nSection: utils\nPriority: optional\nArchitecture: amd64\nDepends: x11-xserver-utils\nMaintainer: DuaScreen Aligner <essore99@gmail.com>\nDescription: Multi-monitor DPI cursor correction daemon\n Pairs with the DuaScreen Aligner GNOME extension to fix cursor speed\n and alignment across monitors with different pixel densities.\n' \
+		"$(DEB_VERSION)" > $(DEB_DIR)/DEBIAN/control
+	printf '#!/bin/sh\nset -e\nsystemctl daemon-reload\nsystemctl enable --now dua-screen-aligner.service || true\n' \
+		> $(DEB_DIR)/DEBIAN/postinst
+	printf '#!/bin/sh\nset -e\nsystemctl disable --now dua-screen-aligner.service || true\n' \
+		> $(DEB_DIR)/DEBIAN/prerm
+	chmod 755 $(DEB_DIR)/DEBIAN/postinst $(DEB_DIR)/DEBIAN/prerm
+	dpkg-deb --build --root-owner-group $(DEB_DIR) \
+		$(BUILD_DIR)/dua-screen-aligner_$(DEB_VERSION)_amd64.deb
+
+# Everything needed for a release: extension zip + daemon .deb.
+.PHONY: dist
+dist: pack-extension deb
+	@echo "Release artifacts:"
+	@ls -la $(BUILD_DIR)/*.zip $(BUILD_DIR)/*.deb $(EXTENSION_UUID).shell-extension.zip 2>/dev/null || true
+	@ls -la $(BUILD_DIR)
 
 # ============================================================================
 # Development
