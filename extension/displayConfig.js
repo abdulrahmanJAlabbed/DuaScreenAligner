@@ -91,20 +91,25 @@ export function logicalSize(mode, transform) {
 
 // Re-apply the current configuration with new positions. positionsByConnector
 // maps a connector name (e.g. "DP-4") to { x, y }. Everything else — mode,
-// scale, transform, primary — is preserved from the current state.
-export function applyPositions(state, positionsByConnector, method = APPLY_PERSISTENT) {
+// scale, transform — is preserved from the current state. If
+// primaryConnector is given, that logical monitor becomes primary;
+// otherwise the current primary flags are preserved.
+export function applyPositions(state, positionsByConnector, method = APPLY_PERSISTENT, primaryConnector = null) {
     const newLogical = state.logical.map(entry => {
         const monitorsPart = entry.connectors.map(connector => {
             const mode = state.modeByConnector[connector];
             return [connector, mode ? mode.id : '', {}];
         });
         const pos = positionsByConnector[entry.connectors[0]] || { x: entry.x, y: entry.y };
+        const primary = primaryConnector !== null
+            ? entry.connectors.includes(primaryConnector)
+            : entry.primary;
         return [
             Math.round(pos.x),
             Math.round(pos.y),
             entry.scale,
             entry.transform,
-            entry.primary,
+            primary,
             monitorsPart,
         ];
     });
