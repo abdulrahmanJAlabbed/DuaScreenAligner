@@ -1,173 +1,95 @@
 # DuaScreen Aligner
 
-**Multi-monitor DPI cursor correction for Linux.** Fixes the jarring cursor speed change when moving between monitors with different pixel densities and lets you describe layouts for arbitrary monitor arrangements, including a portrait screen on the left and a main screen centered beside it.
+**Multi-monitor alignment, DPI cursor correction, and physically-continuous wallpapers for Linux (GNOME/X11).**
 
-## Architecture
+Mixed-DPI multi-monitor setups suffer from three problems this project fixes:
+
+1. **Monitor seam misalignment** — the logical layout offset doesn't match how the panels physically sit on your desk, so windows and the cursor "jump" when crossing the bezel.
+2. **Cursor speed changes** — the pointer covers different physical distance per count on each monitor's pixel density.
+3. **Broken spanning wallpapers** — pixel-space spanning makes one image physically discontinuous across different-DPI panels.
+
+## Components
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    GNOME Shell Extension                 │
-│  ┌─────────────────────────────────────────────────────┐  │
-│  │ Preferences (Libadwaita/GTK4)                      │  │
-│  │  Layout JSON editor • Presets • Apply to daemon    │  │
-│  └─────────────────────────────────────────────────────┘  │
-└───────────────┬──────────────────────────────────────────┘
-                │ DBus (SetLayout / SetEnabled)
-                ▼
-┌─────────────────────────────────────────────────────────┐
-│                     Go Daemon (root)                     │
-│                                                          │
-│   /dev/input/eventX ──► evdev.go ──► transform.go ──►    │
-│   (EVIOCGRAB)           (read)       (DPI matrix)        │
-│                                          │               │
-│                                          ▼               │
-│                                      uinput.go ──►       │
-│                                      (inject)    /dev/    │
-│                                                  uinput   │
-│   dbus_service.go ◄── config from extension              │
-└─────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│ GNOME Shell Extension                                        │
+│  extension.js   panel indicator, async daemon sync,          │
+│                 periodic cursor-position sync                │
+│  prefs.js       Displays-style arrangement editor:           │
+│                 drag + snap, physical (mm) alignment,        │
+│                 seam wizard launcher, wallpaper engine       │
+│  alignWizard.js standalone fullscreen alignment wizard       │
+│                 (physical ruler lines + cursor-click marks)  │
+│  displayConfig.js  Mutter DisplayConfig wrapper              │
+└───────────────┬──────────────────────────────────────────────┘
+                │ DBus (system bus)          │ Mutter (session)
+                ▼                            ▼
+┌──────────────────────────────┐   VERIFY → PERSISTENT apply
+│ Go daemon (root, systemd)    │
+│  evdev grab → DPI transform  │
+│  → uinput inject             │
+│  zero-alloc hot path,        │
+│  poll-based reads,           │
+│  teardown button release     │
+└──────────────────────────────┘
 ```
 
-## Quick Start
+## Features
 
-### Prerequisites
+- **Arrangement editor** — GNOME-Displays-style canvas: drag monitors with edge snapping (Ctrl = free), keyboard nudge, primary selector. Layouts are validated by Mutter (VERIFY) before applying — invalid configs can never reach the X server.
+- **Physical alignment** — one-click presets (tops/centers/bottoms level) computed from EDID panel sizes, or type the measured mm offset directly. The gap is remembered; the **Align** button reapplies it any time.
+- **Align wizard** — both screens show one physical ruler (a line every 40 mm of glass). Adjust until the rulers merge, or hold a card across the bezel and click under its edge on both screens — alignment snaps automatically.
+- **DPI cursor correction** — the daemon grabs the physical mouse, scales movement by each monitor's real DPI (primary monitor = baseline), and injects through a virtual device. Zero heap allocations in the hot path.
+- **Physically-continuous wallpaper** — the image is stitched in millimeter space: each monitor gets the crop its glass physically covers, at its own pixel density. A straight line in the image stays straight across the bezel.
+- **Per-display framing** — click a display and move/zoom/crop its picture independently (buttons, right-drag, Ctrl+scroll). Framing is remembered **per image**; a gallery shows current, last, and suggested wallpapers.
 
-- Go 1.22+
-- GNOME Shell 45, 46, or 47
-- `glib-compile-schemas` (usually in `libglib2.0-dev`)
-- Root access (for evdev/uinput)
+## Install
 
-### Build & Install
+Requirements: Go 1.22+, GNOME Shell 45–47 (X11 session), `glib-compile-schemas`.
 
 ```bash
-# Build the daemon
-make build
-
-# Run tests (includes zero-allocation verification)
-make test
-
-# Install everything (daemon + extension + systemd + udev)
-make install
-
-# Or install components individually:
-make install-daemon      # Binary + systemd service
-make install-extension   # GNOME extension + schemas
-make install-udev        # Device permission rules
-```
-
-### Enable
-
-```bash
-# Start the daemon
+make build              # daemon + schemas
+sudo make install       # daemon binary + DBus policy + extension
 sudo systemctl enable --now dua-screen-aligner
-
-# Enable the GNOME extension
 gnome-extensions enable dua-screen-aligner@duascreenaligner.github.com
+gnome-extensions prefs  dua-screen-aligner@duascreenaligner.github.com
 ```
 
-### Configure
+Everything is one-time: the layout persists in Mutter, the daemon autostarts at boot, the stitched wallpaper is cached, and per-image framing survives restarts.
 
-Open GNOME Extensions → DuaScreen Aligner → Preferences, then use Detect current monitors (xrandr), load a preset, or paste your own JSON layout. The extension stores the layout in GSettings and pushes it to the daemon over DBus.
-
-```bash
-gnome-extensions prefs dua-screen-aligner@duascreenaligner.github.com
-```
-
-## Testing & Validation
-
-### Unit Tests
+## Development
 
 ```bash
-# Run all tests with race detector
-cd daemon && go test -v -race ./...
+make test               # go vet + race tests + schema/extension checks
+make bench              # zero-allocation benchmarks (expect 0 allocs/op)
+make install-extension  # extension only (no root)
+make pack-extension     # zip for extensions.gnome.org
 
-# Zero-allocation benchmark (expected: 0 allocs/op)
-cd daemon && go test -bench=. -benchmem -count=5 ./...
-```
+# run the align wizard standalone for debugging
+gjs -m extension/alignWizard.js
 
-### Memory Profiling (pprof)
-
-```bash
-# Start daemon with profiling enabled
-make pprof
-
-# In another terminal, verify zero heap allocations in hot path:
-go tool pprof http://localhost:6060/debug/pprof/heap
-go tool pprof -alloc_space http://localhost:6060/debug/pprof/heap
-```
-
-### Extension Validation
-
-```bash
-# Validate extension structure
-gnome-extensions validate extension/
-
-# Compile schemas (strict mode catches errors)
-glib-compile-schemas --strict extension/schemas/
-
-# Test in nested Wayland session (safe, isolated)
-make dev-session
-```
-
-### Input Latency Measurement
-
-```bash
-# Measure event processing latency
-sudo perf stat -e cycles,instructions,cache-misses \
-  ./build/dua-screen-aligner --device=/dev/input/event3
-
-# Verify virtual device output
-sudo evtest  # Select "DuaScreen Virtual Mouse"
-```
-
-### DBus Interface Testing
-
-```bash
-# Query daemon status
+# daemon DBus surface
 busctl --system call com.github.duascreenaligner.Daemon \
   /com/github/duascreenaligner/Daemon \
-  com.github.duascreenaligner.Daemon \
-  GetStatus
-
-# Push a test layout
-busctl --system call com.github.duascreenaligner.Daemon \
-  /com/github/duascreenaligner/Daemon \
-  com.github.duascreenaligner.Daemon \
-  SetLayout s \
-  '{"monitors":[{"name":"DP-1","x":0,"y":0,"width_px":1920,"height_px":1080,"width_mm":527,"height_mm":296},{"name":"HDMI-1","x":1920,"y":0,"width_px":3840,"height_px":2160,"width_mm":600,"height_mm":340}]}'
-
-# List detected devices
-busctl --system call com.github.duascreenaligner.Daemon \
-  /com/github/duascreenaligner/Daemon \
-  com.github.duascreenaligner.Daemon \
-  ListDevices
-
-# Enable/disable correction
-busctl --system call com.github.duascreenaligner.Daemon \
-  /com/github/duascreenaligner/Daemon \
-  com.github.duascreenaligner.Daemon \
-  SetEnabled b true
+  com.github.duascreenaligner.Daemon GetStatus
 ```
 
-## File Reference
-
-| File | Purpose |
+| Path | Purpose |
 |------|---------|
-| `daemon/main.go` | Entry point, signal handling, event loop orchestration |
-| `daemon/evdev.go` | evdev device I/O, EVIOCGRAB, zero-alloc reads |
-| `daemon/uinput.go` | Virtual mouse creation, zero-alloc event injection |
-| `daemon/transform.go` | DPI transformation matrices, fixed-point math |
-| `daemon/dbus_service.go` | DBus system bus interface implementation |
-| `daemon/config.go` | Configuration types, JSON serialization |
-| `extension/extension.js` | GNOME Shell panel indicator |
-| `extension/prefs.js` | Libadwaita preferences with monitor topology map |
-| `extension/stylesheet.css` | Panel indicator styling |
-| `dbus/*.xml` | DBus introspection contract |
-| `systemd/*.service` | systemd unit with security hardening |
-| `udev/*.rules` | Device permission rules |
+| `daemon/main.go` | event loop, reader-goroutine lifecycle, teardown button release |
+| `daemon/evdev.go` | poll-based zero-alloc evdev reads, EVIOCGRAB |
+| `daemon/uinput.go` | virtual mouse, bounded non-busy writes |
+| `daemon/transform.go` | fixed-point DPI transform, primary-baseline scaling |
+| `daemon/xrandr.go` | boot-time layout autodetect (incl. rotation + primary) |
+| `daemon/dbus_service.go` | SetLayout / SetEnabled / SetCursorPosition / … |
+| `extension/prefs.js` | arrangement editor + wallpaper engine |
+| `extension/alignWizard.js` | standalone fullscreen alignment wizard |
+| `extension/displayConfig.js` | Mutter GetCurrentState / ApplyMonitorsConfig |
 
 ## Uninstall
 
 ```bash
-make uninstall
+sudo systemctl disable --now dua-screen-aligner
+sudo rm /usr/local/bin/dua-screen-aligner /etc/dbus-1/system.d/com.github.duascreenaligner.Daemon.conf
+gnome-extensions uninstall dua-screen-aligner@duascreenaligner.github.com
 ```
