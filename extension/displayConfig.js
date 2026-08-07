@@ -40,9 +40,17 @@ export function getCurrentState() {
 
     const [serial, monitors, logicalMonitors, properties] = reply.recursiveUnpack();
 
+    // Stable hardware identity per connector: vendor:product:serial. Unlike
+    // the connector name (DP-3, HDMI-1…) this survives a reboot through
+    // another OS renumbering the ports — so per-monitor settings can be
+    // keyed to the physical panel, not the socket it happens to be in.
     const modeByConnector = {};
+    const specByConnector = {};
     for (const [ids, modes] of monitors) {
         const connector = ids[0];
+        const [, vendor, product, serial] = ids;
+        specByConnector[connector] =
+            [vendor, product, serial].filter(s => s && s.length).join(':') || connector;
         let chosen = null;
         for (const mode of modes) {
             const [id, width, height, , , , modeProps] = mode;
@@ -75,7 +83,7 @@ export function getCurrentState() {
     if (properties && properties['layout-mode'] !== undefined)
         layoutMode = properties['layout-mode'];
 
-    return { serial, modeByConnector, logical, layoutMode };
+    return { serial, modeByConnector, specByConnector, logical, layoutMode };
 }
 
 // Returns the logical pixel size of a monitor given its current mode and

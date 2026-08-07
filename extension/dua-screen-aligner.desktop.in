@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=DuaScreen Aligner
+GenericName=Display & Wallpaper Aligner
+Comment=Align mixed-DPI displays and span one wallpaper physically across them
+Exec=gjs -m @APPDIR@/app.js
+Icon=preferences-desktop-display-symbolic
+Terminal=false
+Type=Application
+Categories=Settings;HardwareSettings;GTK;
+Keywords=display;monitor;wallpaper;dpi;align;bezel;multi-monitor;
+StartupNotify=true

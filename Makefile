@@ -34,6 +34,11 @@ EXTENSION_INSTALLDIR := $(REAL_HOME)/.local/share/gnome-shell/extensions/$(EXTEN
 BINDIR          := /usr/local/bin
 SERVICE_NAME    := dua-screen-aligner
 
+# Standalone-app install destinations (user scope, no root needed).
+APP_INSTALLDIR  := $(REAL_HOME)/.local/share/dua-screen-aligner
+APPS_DIR        := $(REAL_HOME)/.local/share/applications
+APP_FILES       := editor.js app.js displayConfig.js alignWizard.js
+
 # ============================================================================
 # Build Targets
 # ============================================================================
@@ -89,6 +94,29 @@ install-extension:
 	glib-compile-schemas --strict $(EXTENSION_DIR)/schemas
 	mkdir -p $(EXTENSION_INSTALLDIR)
 	cp -r $(EXTENSION_DIR)/* $(EXTENSION_INSTALLDIR)
+
+# Install the standalone desktop app (shares editor.js with the extension).
+# User scope — no root. Launch "DuaScreen Aligner" from the app grid.
+.PHONY: install-app
+install-app:
+	@echo "Installing standalone app..."
+	mkdir -p $(APP_INSTALLDIR)/schemas
+	cp $(addprefix $(EXTENSION_DIR)/,$(APP_FILES)) $(APP_INSTALLDIR)/
+	cp $(EXTENSION_DIR)/schemas/*.gschema.xml $(APP_INSTALLDIR)/schemas/
+	glib-compile-schemas $(APP_INSTALLDIR)/schemas
+	chmod +x $(APP_INSTALLDIR)/app.js
+	mkdir -p $(APPS_DIR)
+	sed 's|@APPDIR@|$(APP_INSTALLDIR)|g' \
+		$(EXTENSION_DIR)/dua-screen-aligner.desktop.in > $(APPS_DIR)/dua-screen-aligner.desktop
+	@update-desktop-database $(APPS_DIR) 2>/dev/null || true
+	@echo "Installed. Launch 'DuaScreen Aligner' from your apps (or: gjs -m $(APP_INSTALLDIR)/app.js)."
+
+.PHONY: uninstall-app
+uninstall-app:
+	rm -rf $(APP_INSTALLDIR)
+	rm -f $(APPS_DIR)/dua-screen-aligner.desktop
+	@update-desktop-database $(APPS_DIR) 2>/dev/null || true
+	@echo "Standalone app removed."
 
 .PHONY: pack-extension
 pack-extension:
