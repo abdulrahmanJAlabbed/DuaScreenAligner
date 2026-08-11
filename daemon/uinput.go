@@ -172,12 +172,14 @@ func (w *UinputWriter) ioctl(request, value int) error {
 	return nil
 }
 
-// writeDeadline bounds how long writeAll waits for the uinput fd to become
-// writable before giving up and dropping the event. Without a deadline, a
-// full uinput buffer caused a tight EAGAIN retry loop that pegged one CPU
-// core at 100% while holding the exclusive device grab — mouse dead,
-// desktop apparently frozen.
-const writeDeadline = time.Second
+// writeDeadline bounds how long writeAll waits (via poll, no CPU burn) for the
+// uinput fd to become writable before giving up and dropping the event. The
+// read+inject loop is single-threaded, so a long wait here also stalls reading
+// the physical mouse — keep it short so a transient backpressure blip drops one
+// event and stays responsive rather than freezing the pointer. The caller
+// treats the drop as non-fatal (logs, continues) and never tears down the
+// device, so a dropped frame is a tiny hiccup, not a broken drag.
+const writeDeadline = 250 * time.Millisecond
 
 // writeAll writes buf to the uinput fd. On EAGAIN it polls for writability
 // (bounded by writeDeadline) instead of busy-looping; EINTR is retried.

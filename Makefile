@@ -37,6 +37,7 @@ SERVICE_NAME    := dua-screen-aligner
 # Standalone-app install destinations (user scope, no root needed).
 APP_INSTALLDIR  := $(REAL_HOME)/.local/share/dua-screen-aligner
 APPS_DIR        := $(REAL_HOME)/.local/share/applications
+ICONS_DIR       := $(REAL_HOME)/.local/share/icons/hicolor/scalable/apps
 APP_FILES       := editor.js app.js displayConfig.js alignWizard.js
 
 # ============================================================================
@@ -105,6 +106,9 @@ install-app:
 	cp $(EXTENSION_DIR)/schemas/*.gschema.xml $(APP_INSTALLDIR)/schemas/
 	glib-compile-schemas $(APP_INSTALLDIR)/schemas
 	chmod +x $(APP_INSTALLDIR)/app.js
+	mkdir -p $(ICONS_DIR)
+	cp $(EXTENSION_DIR)/icons/dua-screen-aligner.svg $(ICONS_DIR)/
+	@gtk-update-icon-cache -f -t $(REAL_HOME)/.local/share/icons/hicolor 2>/dev/null || true
 	mkdir -p $(APPS_DIR)
 	sed 's|@APPDIR@|$(APP_INSTALLDIR)|g' \
 		$(EXTENSION_DIR)/dua-screen-aligner.desktop.in > $(APPS_DIR)/dua-screen-aligner.desktop
@@ -115,6 +119,7 @@ install-app:
 uninstall-app:
 	rm -rf $(APP_INSTALLDIR)
 	rm -f $(APPS_DIR)/dua-screen-aligner.desktop
+	rm -f $(ICONS_DIR)/dua-screen-aligner.svg
 	@update-desktop-database $(APPS_DIR) 2>/dev/null || true
 	@echo "Standalone app removed."
 
@@ -123,8 +128,10 @@ pack-extension:
 	@echo "Packing GNOME Shell extension for extensions.gnome.org..."
 	mkdir -p $(BUILD_DIR)
 	gnome-extensions pack $(EXTENSION_DIR) \
+		--extra-source=editor.js \
 		--extra-source=displayConfig.js \
 		--extra-source=alignWizard.js \
+		--extra-source=icons \
 		--force -o $(BUILD_DIR)
 
 # Debian package for the daemon (binary + systemd unit + DBus policy).

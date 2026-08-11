@@ -1,13 +1,13 @@
 // main.go — Entry point for the DuaScreenAligner daemon.
 //
 // Orchestrates the full lifecycle:
-//   1. Parse CLI flags (device path, pprof address, log level)
-//   2. Start the DBus system bus service (receives layout from GNOME extension)
-//   3. Open and grab the physical mouse via evdev (EVIOCGRAB)
-//   4. Create a virtual mouse via uinput
-//   5. Enter the event loop: read → transform → inject
-//   6. Handle SIGTERM/SIGINT for graceful shutdown (ungrab + destroy virtual device)
-//   7. Optional: expose pprof HTTP server for memory profiling
+//  1. Parse CLI flags (device path, pprof address, log level)
+//  2. Start the DBus system bus service (receives layout from GNOME extension)
+//  3. Open and grab the physical mouse via evdev (EVIOCGRAB)
+//  4. Create a virtual mouse via uinput
+//  5. Enter the event loop: read → transform → inject
+//  6. Handle SIGTERM/SIGINT for graceful shutdown (ungrab + destroy virtual device)
+//  7. Optional: expose pprof HTTP server for memory profiling
 package main
 
 import (
@@ -140,9 +140,9 @@ func main() {
 // ============================================================================
 
 // runEventLoop is the core processing pipeline. It:
-//   1. Opens and grabs the evdev device
-//   2. Creates the virtual uinput device
-//   3. Reads raw events, applies DPI transformation, injects corrected events
+//  1. Opens and grabs the evdev device
+//  2. Creates the virtual uinput device
+//  3. Reads raw events, applies DPI transformation, injects corrected events
 //
 // Returns true if a termination signal was received (caller should exit),
 // or false if the loop should be retried (device error, reload request).
@@ -281,9 +281,15 @@ func runEventLoop(
 		}
 	}()
 
-	// ---- Hot path: read → transform → inject ----
+	// ---- Hot path: read -> transform -> inject ----
+	//
+	// Injection failures are NON-FATAL. A transient uinput write stall must not
+	// tear down and recreate the virtual mouse: doing that mid-drag makes the
+	// compositor see the button go up, so the drag drops and re-grabs on the
+	// next click ("detach and re-grab"). We log (rate-limited) and drop the
+	// event instead. Only READ errors (the physical device disconnecting)
+	// restart the loop.
 	var ev InputEvent
-
 	var batchDX, batchDY int32
 
 	errCh := make(chan error, 1)
@@ -291,6 +297,29 @@ func runEventLoop(
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+
+		injectErrs := 0
+		logInject := func(err error) {
+			injectErrs++
+			if injectErrs <= 5 || injectErrs%1000 == 0 {
+				log.Printf("uinput inject dropped (%d total): %v", injectErrs, err)
+			}
+		}
+		// Emit any pending scaled motion as its own report. Called before every
+		// non-motion event so a button or wheel never jumps ahead of the
+		// movement in the same frame: the compositor sees motion-then-button,
+		// the same order the kernel delivered.
+		flushMotion := func() {
+			if batchDX == 0 && batchDY == 0 {
+				return
+			}
+			cx, cy := transform.Transform(batchDX, batchDY)
+			batchDX, batchDY = 0, 0
+			if err := writer.InjectRelativeMove(cx, cy); err != nil {
+				logInject(err)
+			}
+		}
+
 		for {
 			select {
 			case <-ctx.Done():
@@ -322,67 +351,42 @@ func runEventLoop(
 				} else if ev.Code == REL_Y {
 					batchDY += ev.Value
 				} else {
+					// wheel / other relative axis: flush motion, then pass through
+					flushMotion()
 					if err := writer.InjectEvent(&ev); err != nil {
-						select {
-						case errCh <- err:
-						case <-ctx.Done():
-						}
-						return
+						logInject(err)
 					}
 				}
 
 			case EV_SYN:
 				if ev.Code == 0 {
+					// End of frame: flush scaled motion (emits its own SYN). If
+					// there was no motion, pass the SYN through to close out any
+					// button/other events emitted during this frame.
 					if batchDX != 0 || batchDY != 0 {
-						correctedDX, correctedDY := transform.Transform(batchDX, batchDY)
-						if err := writer.InjectRelativeMove(correctedDX, correctedDY); err != nil {
-							select {
-							case errCh <- err:
-							case <-ctx.Done():
-							}
-							return
-						}
-						batchDX = 0
-						batchDY = 0
-					} else {
-						if err := writer.InjectEvent(&ev); err != nil {
-							select {
-							case errCh <- err:
-							case <-ctx.Done():
-							}
-							return
-						}
+						flushMotion()
+					} else if err := writer.InjectEvent(&ev); err != nil {
+						logInject(err)
 					}
-				} else {
-					if err := writer.InjectEvent(&ev); err != nil {
-						select {
-						case errCh <- err:
-						case <-ctx.Done():
-						}
-						return
-					}
+				} else if err := writer.InjectEvent(&ev); err != nil {
+					logInject(err)
 				}
 
 			case EV_KEY:
-				// Track mouse button state for teardown release injection.
+				// Track mouse button state so teardown can release anything held.
 				if ev.Code >= BTN_LEFT && ev.Code <= BTN_EXTRA {
 					heldButtons[ev.Code-BTN_LEFT] = ev.Value != 0
 				}
+				// Motion before button: preserve within-frame order.
+				flushMotion()
 				if err := writer.InjectEvent(&ev); err != nil {
-					select {
-					case errCh <- err:
-					case <-ctx.Done():
-					}
-					return
+					logInject(err)
 				}
 
 			default:
+				flushMotion()
 				if err := writer.InjectEvent(&ev); err != nil {
-					select {
-					case errCh <- err:
-					case <-ctx.Done():
-					}
-					return
+					logInject(err)
 				}
 			}
 		}

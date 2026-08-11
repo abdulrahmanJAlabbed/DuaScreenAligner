@@ -1,10 +1,10 @@
 {
   "uuid": "dua-screen-aligner@duascreenaligner.github.com",
   "name": "DuaScreen Aligner",
-  "description": "Seamless cursor movement across monitors with different pixel densities. Pairs with the DuaScreenAligner daemon to correct cursor speed when crossing DPI boundaries.",
+  "description": "Align mixed-DPI, mixed-orientation monitors and span one wallpaper physically across them, so the image stays continuous across the bezel. Includes a per-display picture editor (pan, zoom, crop per screen). Optional companion daemon corrects cursor speed when crossing DPI boundaries.",
   "shell-version": ["45", "46", "47"],
-  "version": 2,
+  "version": 3,
   "settings-schema": "org.gnome.shell.extensions.dua-screen-aligner",
-  "url": "https://github.com/duascreenaligner/dua-screen-aligner",
+  "url": "https://github.com/abdulrahmanJAlabbed/Dual_Screen_Aligner",
   "gettext-domain": "dua-screen-aligner"
 }
