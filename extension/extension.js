@@ -11,6 +11,7 @@ import St from 'gi://St';
 import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
+import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 const DBUS_NAME = 'com.github.duascreenaligner.Daemon';
 const DBUS_PATH = '/com/github/duascreenaligner/Daemon';
@@ -83,6 +84,7 @@ export default class DuaScreenAlignerExtension extends Extension {
             this._indicator.destroy();
             this._indicator = null;
         }
+        this._toggleItem = null;
 
         if (this._settings && this._changedIds) {
             for (const id of this._changedIds)
@@ -96,16 +98,35 @@ export default class DuaScreenAlignerExtension extends Extension {
     _createIndicator() {
         this._indicator = new PanelMenu.Button(0.0, 'DuaScreen Aligner', false);
 
+        // Use the app's own symbolic icon (shipped in icons/), recolored by
+        // the shell. Fall back to a stock display icon if it can't be loaded.
+        let gicon = null;
+        try {
+            gicon = Gio.icon_new_for_string(`${this.path}/icons/dua-screen-aligner-symbolic.svg`);
+        } catch (_e) {
+            gicon = null;
+        }
         const icon = new St.Icon({
-            icon_name: 'video-display-symbolic',
+            gicon,
+            icon_name: gicon ? null : 'video-display-symbolic',
             style_class: 'system-status-icon dua-panel-icon',
         });
         this._indicator.add_child(icon);
 
-        this._indicator.menu.addAction('Apply layout', () => this._syncToDaemon());
-        this._indicator.menu.addAction('Toggle correction', () => {
-            this._settings.set_boolean('enabled', !this._settings.get_boolean('enabled'));
+        // DPI cursor-correction switch, kept in sync with the setting.
+        this._toggleItem = new PopupMenu.PopupSwitchMenuItem(
+            'DPI cursor correction', this._settings.get_boolean('enabled'));
+        this._toggleItem.connect('toggled', (_item, state) => {
+            this._settings.set_boolean('enabled', state);
         });
+        this._changedIds.push(this._settings.connect('changed::enabled', () => {
+            if (this._toggleItem)
+                this._toggleItem.setToggleState(this._settings.get_boolean('enabled'));
+        }));
+        this._indicator.menu.addMenuItem(this._toggleItem);
+
+        this._indicator.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+        this._indicator.menu.addAction('Open Settings…', () => this.openPreferences());
 
         Main.panel.addToStatusArea(this.uuid, this._indicator);
     }

@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16">
+  <!-- Symbolic panel icon: two offset displays (portrait + landscape), the
+       DuaScreen identity. Shell recolors this (filename ends -symbolic). -->
+  <g fill="#2e3436">
+    <!-- portrait display (left): hollow frame via evenodd, plus a stand -->
+    <path fill-rule="evenodd" d="M1.5 1h4a1 1 0 0 1 1 1v8.5a1 1 0 0 1-1 1h-4a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1zm0 1.25v8h4v-8z"/>
+    <rect x="3" y="11.5" width="1" height="1.6" rx="0.3"/>
+    <rect x="2" y="13" width="3" height="1" rx="0.4"/>
+    <!-- landscape display (right, dropped) -->
+    <path fill-rule="evenodd" d="M8.5 4h6a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1h-6a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zm0 1.25v4.5h6v-4.5z"/>
+    <rect x="11" y="11" width="1" height="1.6" rx="0.3"/>
+    <rect x="10" y="12.5" width="3" height="1" rx="0.4"/>
+  </g>
+</svg>
